@@ -1,0 +1,37 @@
+# IMERG to HEALPix Processing Configuration
+# Optimized for NERSC Perlmutter
+
+# Data paths
+input_base_dir: "/pscratch/sd/w/wcmca1/GPM/IMERG_V07B_hpss/"
+output_base_dir: "/pscratch/sd/w/wcmca1/GPM/IMERG_V07B_hpss/healpix_test/"
+weights_dir: "/pscratch/sd/w/wcmca1/GPM/weights/"
+
+# Processing parameters
+default_zoom: 9
+time_chunk_size: 48  # 1 day worth of 30-min data
+# Note: spatial_chunk_size is automatically computed based on zoom level using chunk_tools.compute_chunksize()
+
+# Dask configuration for Perlmutter
+dask:
+  n_workers: 8
+  threads_per_worker: 8
+  memory_limit: "60GB"
+  
+# Compression settings for Zarr
+compression:
+  compressor: "zstd"
+  compressor_level: 3
+  dtype: "float32"
+
+# Variable filtering
+skip_variables:
+  - "*_bnds"
+  - "*_bounds"
+  - "time_bnds"
+  - "lat_bnds" 
+  - "lon_bnds"
+
+# Only process variables with these dimensions
+required_dimensions:
+  - ["time", "lat", "lon"]
+  - ["time", "lon", "lat"]
