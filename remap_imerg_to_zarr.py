@@ -503,17 +503,37 @@ def write_zarr_with_monitoring(ds_remap, output_zarr, time_chunk_size=48, zoom=9
                 f"Use overwrite=True to replace it, or choose a different output path."
             )
     
-    # Create encoding for efficient storage
-    encoding = {
-        'precipitation': {
-            'compressor': zarr.Blosc(cname='zstd', clevel=3, shuffle=2),
-            'chunks': (time_chunk_size, spatial_chunk_size),  # Time and spatial chunking
-            'dtype': 'float32'
-        },
-        # Note: Do NOT specify dtype for 'time' coordinate - let xarray/zarr handle it automatically
-        # Specifying 'time': {'dtype': 'datetime64[ns]'} causes time coordinate corruption
-        'cell': {'dtype': 'int32'}
-    }
+    # Create encoding for efficient storage using dynamic approach
+    encoding = {}
+    
+    # Apply encoding to all data variables in the dataset
+    for var_name in ds_remap_chunked.data_vars:
+        var = ds_remap_chunked[var_name]
+        
+        # Check if the variable has floating point data
+        if var.dtype.kind == 'f':  # floating point
+            encoding[var_name] = {
+                'compressor': zarr.Blosc(cname='zstd', clevel=3, shuffle=2),
+                'chunks': (time_chunk_size, spatial_chunk_size),  # Time and spatial chunking
+                'dtype': 'float32'
+            }
+        else:
+            # For non-floating point data, preserve the original dtype
+            encoding[var_name] = {
+                'compressor': zarr.Blosc(cname='zstd', clevel=3, shuffle=2),
+                'chunks': (time_chunk_size, spatial_chunk_size),
+                'dtype': var.dtype
+            }
+    
+    # Set encoding for coordinate variables based on their actual data type
+    # Note: Do NOT specify dtype for 'time' coordinate - let xarray/zarr handle it automatically
+    # Specifying 'time': {'dtype': 'datetime64[ns]'} causes time coordinate corruption
+    if 'cell' in ds_remap_chunked.dims and 'cell' in ds_remap_chunked.coords:
+        cell_var = ds_remap_chunked.coords['cell']
+        if cell_var.dtype.kind == 'i':  # integer
+            encoding['cell'] = {'dtype': 'int32'}
+        elif cell_var.dtype.kind == 'f':  # floating point
+            encoding['cell'] = {'dtype': 'float32'}
 
     # Write to Zarr with progress monitoring
     logger.info("🔄 Starting Zarr write operation...")
