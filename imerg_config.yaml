@@ -4,14 +4,16 @@
 # Data paths
 input_base_dir: "/pscratch/sd/w/wcmca1/GPM/IMERG_V07B_hpss/"
 output_base_dir: "/pscratch/sd/w/wcmca1/GPM/IMERG_V07B_hpss/healpix_test/"
+output_basename: "IMERG_V7"
 weights_dir: "/pscratch/sd/w/wcmca1/GPM/weights/"
 
 # Processing parameters  
 default_zoom: 9
 time_chunk_size: 24  # 1 day worth of 1-hour data (balance memory vs parallelism)
 time_average: "1h"  # Options: null (no averaging), "1h" (1-hour), "3h", "6h", "1d" (daily), etc.
-convert_time: true   # Convert cftime.DatetimeJulian to standard datetime64 for pandas compatibility
+convert_time: True   # Convert cftime.DatetimeJulian to standard datetime64 for pandas compatibility
 # Note: spatial_chunk_size is automatically computed based on zoom level using chunk_tools.compute_chunksize()
+force_recompute: False    # Force recompute weight file even if it exists
 
 # Dask configuration optimized for NERSC Perlmutter
 # Hardware: 2x AMD EPYC 7763 (128 cores total), 512 GB RAM, 4 NUMA domains per socket
