@@ -91,20 +91,33 @@ def gen_weights(ds, order, weights_file=None, force_recompute=False):
     source_lon = lon_2d.flatten()
     source_lat = lat_2d.flatten()
     
-    # Handle global periodicity for IMERG data
-    logger.info("Handling longitude periodicity for global grid")
-    lon_extended = np.hstack([source_lon - 360, source_lon, source_lon + 360])
-    lat_extended = np.tile(source_lat, 3)
+    # Check if this is a global or regional grid
+    lon_range = np.max(ds.lon.values) - np.min(ds.lon.values)
+    is_global = lon_range >= 359  # Global grid spans ~360 degrees
     
-    # Compute weights using extended grid
-    weights = egr.compute_weights_delaunay(
-        points=(lon_extended, lat_extended), 
-        xi=(hp_lon, hp_lat)
-    )
+    if is_global:
+        # Handle longitude periodicity for global grids (like IMERG)
+        logger.info("Global grid detected - handling longitude periodicity")
+        lon_extended = np.hstack([source_lon - 360, source_lon, source_lon + 360])
+        lat_extended = np.tile(source_lat, 3)
+        
+        # Compute weights using extended grid
+        weights = egr.compute_weights_delaunay(
+            points=(lon_extended, lat_extended), 
+            xi=(hp_lon, hp_lat)
+        )
 
-    # Remap the source indices back to their valid range
-    original_size = len(source_lon)
-    weights = weights.assign(src_idx=weights.src_idx % original_size)
+        # Remap the source indices back to their valid range
+        original_size = len(source_lon)
+        weights = weights.assign(src_idx=weights.src_idx % original_size)
+        
+    else:
+        # Regional grid - no periodicity handling needed
+        logger.info(f"Regional grid detected (lon range: {lon_range:.1f}°) - no periodicity handling")
+        weights = egr.compute_weights_delaunay(
+            points=(source_lon, source_lat), 
+            xi=(hp_lon, hp_lat)
+        )
     
     # Add metadata
     weights.attrs.update({
@@ -112,12 +125,14 @@ def gen_weights(ds, order, weights_file=None, force_recompute=False):
         'healpix_nside': nside,
         'healpix_npix': npix,
         'source_grid_type': 'regular_latlon',
+        'source_grid_extent': 'global' if is_global else 'regional',
         'source_shape': f"{len(ds.lat)} x {len(ds.lon)}",
         'source_lon_range': f"{np.min(ds.lon):.3f} to {np.max(ds.lon):.3f}",
         'source_lat_range': f"{np.min(ds.lat):.3f} to {np.max(ds.lat):.3f}",
         'source_resolution': f"~{np.diff(ds.lon).mean():.4f}° x {np.diff(ds.lat).mean():.4f}°",
+        'longitude_periodicity': 'enabled' if is_global else 'disabled',
         'creation_date': str(np.datetime64('now')),
-        'description': 'Remapping weights from regular lat/lon grid to HEALPix'
+        'description': f'Remapping weights from {"global" if is_global else "regional"} lat/lon grid to HEALPix'
     })
     
     # Save weights if requested
@@ -223,7 +238,6 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, force_recomput
         )
         
         logger.info(f"Remapped data shape: {remapped_data.shape}")
-        logger.info(f"Remapped data chunks: {remapped_data.chunks}")
         
         # Create new DataArray with proper coordinates
         remapped_vars[var_name] = xr.DataArray(
