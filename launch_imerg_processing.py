@@ -54,17 +54,21 @@ def main():
     # Use config defaults or command line values
     zoom = zoom or config['default_zoom']
     time_average = config.get('time_average')
-    
+    output_basename = config.get('output_basename', 'IMERG')
+
     # Create output filename with time averaging info
     date_range = f"{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
     
     if time_average:
         # Convert time averaging to short format for filename
         time_suffix = time_average.upper().replace('H', 'H').replace('D', 'D')
-        output_file = f"{config['output_base_dir']}/imerg_healpix_{time_suffix}_zoom{zoom}_{date_range}.zarr"
+        filename = f"{output_basename}_{time_suffix}_zoom{zoom}_{date_range}.zarr"
     else:
-        output_file = f"{config['output_base_dir']}/imerg_healpix_zoom{zoom}_{date_range}.zarr"
+        filename = f"{output_basename}_zoom{zoom}_{date_range}.zarr"
     
+    # Use pathlib to properly construct the path (handles extra slashes automatically)
+    output_file = str(Path(config['output_base_dir']) / filename)
+
     print(f"Processing IMERG data from {start_date.date()} to {end_date.date()}")
     print(f"HEALPix zoom level: {zoom}")
     if time_average:
@@ -75,8 +79,8 @@ def main():
     if overwrite:
         print("⚠️  Overwrite mode enabled - existing files will be replaced")
     
-    # Create weights file path
-    weights_file = f"{config['weights_dir']}/imerg_v07b_to_healpix_z{zoom}_weights.nc"
+    # Create weights file path (use pathlib to handle extra slashes)
+    weights_file = str(Path(config['weights_dir']) / f"imerg_v07b_to_healpix_z{zoom}_weights.nc")
     
     # Run the processing with correct parameters
     process_imerg_to_zarr(
@@ -91,7 +95,7 @@ def main():
         time_average=time_average,
         convert_time=config.get('convert_time', False),
         dask_config=config.get('dask', {}),
-        # force_recompute=True  # Force regeneration of weights to match new dataset structure
+        force_recompute=config.get('force_recompute', False),
     )
     
     print(f"\nProcessing completed successfully!")

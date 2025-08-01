@@ -31,11 +31,23 @@ python test_setup.py
 ### 3. Configure Paths
 Edit `imerg_config.yaml`:
 ```yaml
-input_base_dir: "/path/to/your/imerg/data/"
-output_base_dir: "/path/to/output/zarr/files/"
-weights_dir: "/path/to/weights/cache/"
+# Data paths
+input_base_dir: "/pscratch/sd/w/wcmca1/GPM/IMERG_V07B_hpss/"
+output_base_dir: "/pscratch/sd/w/wcmca1/GPM/IMERG_V07B_hpss/healpix_test/"
+output_basename: "IMERG_V7"
+weights_dir: "/pscratch/sd/w/wcmca1/GPM/weights/"
+
+# Processing parameters
 default_zoom: 9
-time_chunk_size: 48  # 1 day of 30-min data
+time_chunk_size: 24  # 1 day worth of 1-hour data
+time_average: "1h"   # Temporal averaging: 30min → 1h
+convert_time: True   # Convert cftime to datetime64 for pandas compatibility
+
+# Dask configuration for NERSC Perlmutter
+dask:
+  n_workers: 16              # 16 workers for NUMA topology
+  threads_per_worker: 8      # 128 total threads
+  memory_limit: "30GB"       # 480GB total memory
 ```
 
 ### 4. Process Data
@@ -45,9 +57,19 @@ time_chunk_size: 48  # 1 day of 30-min data
 python launch_imerg_processing.py 2020-01-01 2020-01-01 9
 ```
 
-**Multiple days (batch job):**
+**Single month:**
+```bash
+python launch_imerg_processing.py 2020-01-01 2020-01-31 9
+```
+
+**Full year (batch job):**
 ```bash
 sbatch submit_imerg_job.sh 2020-01-01 2020-12-31 9
+```
+
+**With overwrite option:**
+```bash
+python launch_imerg_processing.py 2020-01-01 2020-01-31 9 --overwrite
 ```
 
 ## Core Components
@@ -75,16 +97,18 @@ sbatch submit_imerg_job.sh 2020-01-01 2020-12-31 9
 - **Zoom 9**: 3,145,728 cells (~0.1° resolution) - **Recommended for IMERG**
 
 ### Chunking Strategy
-- **Time chunks**: 48 time steps (1 day of 30-min data)
+- **Time chunks**: 24 time steps (1 day of 1-hour averaged data)
 - **Spatial chunks**: Computed automatically per zoom level
   - Zoom 9: 262,144 cells/chunk (12 spatial chunks total)
+- **Temporal averaging**: 30-minute IMERG → 1-hour averaged output
 
 ## Memory & Performance
 
-**Zoom 9 Processing (IMERG native resolution):**
-- Memory: ~48MB per chunk (48 time steps × 262K cells × 4 bytes)
-- Processing: ~9 seconds per day on Perlmutter
-- Output: ~1.7GB per 3 days in compressed Zarr format
+**Zoom 9 Processing (IMERG native resolution with 1h averaging):**
+- Memory: ~24MB per chunk (24 time steps × 262K cells × 4 bytes)
+- Processing: ~4-5 seconds per day on Perlmutter
+- Output: ~0.8GB per 3 days in compressed Zarr format
+- Temporal averaging: 30-minute → 1-hour reduces data volume by 50%
 
 ## File Structure
 
@@ -115,20 +139,26 @@ python launch_imerg_processing.py 2020-01-01 2020-01-31 9
 sbatch submit_imerg_job.sh 2019-01-01 2021-12-31 9
 ```
 
-### Custom Configuration
+### With Overwrite Option
 ```bash
-# Use different time chunk size
-python launch_imerg_processing.py 2020-01-01 2020-01-07 9 \
-  --config custom_config.yaml
+# Overwrite existing files
+python launch_imerg_processing.py 2020-01-01 2020-01-07 9 --overwrite
 ```
 
 ## Output Format
 
+The processed data is saved as Zarr files with:
+- **Naming**: `IMERG_V7_1H_zoom{zoom}_{start_date}_{end_date}.zarr`
+- **Structure**: Time series of HEALPix-remapped precipitation data
+- **Compression**: zstd level 3 for optimal size/speed balance
+- **Temporal resolution**: 1-hour averaged from 30-minute IMERG
+- **Chunks**: Optimized for subsequent analysis workflows
+
 **Zarr Structure:**
 ```
 output.zarr/
-├── precipitation/        # Main data variable
-├── time/                # Time coordinates
+├── precipitation/        # Main data variable (1-hour averaged)
+├── time/                # Time coordinates (datetime64)
 ├── cell/                # HEALPix cell indices
 ├── crs/                 # Grid mapping metadata
 └── .zmetadata           # Consolidated metadata
@@ -138,21 +168,24 @@ output.zarr/
 - HEALPix parameters (nside, order, nest=True)
 - Original grid information
 - Processing timestamps
+- Temporal averaging information
 - Chunk configuration
 
 ## Performance Tips
 
-1. **Memory**: Use time_chunk_size=48 for optimal balance
+1. **Memory**: Use time_chunk_size=24 for optimal balance with 1h averaging
 2. **I/O**: Ensure fast storage for input/output paths
-3. **Parallelism**: Leverage multiple workers on multi-core nodes
+3. **Parallelism**: Leverage 16 workers × 8 threads on Perlmutter nodes
 4. **Caching**: Reuse weight files across processing runs
+5. **Temporal averaging**: Use "1h" averaging to reduce data volume by 50%
 
 ## Troubleshooting
 
 **Common Issues:**
-- Memory errors: Reduce time_chunk_size in config
+- Memory errors: Reduce time_chunk_size in config (try 12 or 6)
 - Slow I/O: Check storage system performance
 - Missing dependencies: Run `python test_setup.py`
+- File path errors: Check for double slashes in output paths
 
 **Getting Help:**
 - Check logs in SLURM output files
@@ -169,91 +202,3 @@ output.zarr/
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-sbatch submit_imerg_job.sh 2020-01-01 2022-12-31 9
-```
-
-## Features
-
-### Hardware Optimization
-- **Perlmutter-specific**: 8 workers × 8 threads = 64 cores
-- **Memory management**: 60GB per worker (450GB total)
-- **Thread control**: Prevents CPU oversubscription
-
-### Processing Capabilities
-- **Multi-file aggregation**: Combines multiple IMERG files into single dataset
-- **Dask lazy evaluation**: Memory-efficient processing of large datasets
-- **HEALPix remapping**: Using easygems.remap with Delaunay triangulation
-- **Zarr output**: Compressed, chunked storage format
-- **Smart filtering**: Automatically skips coordinate bounds variables
-
-### Performance Features
-- **Chunked processing**: Configurable time and spatial chunks
-- **Parallel execution**: Dask distributed computing
-- **Memory monitoring**: Built-in usage tracking and optimization
-- **Progress tracking**: Real-time processing status
-
-## Configuration Parameters
-
-### Key Settings in `imerg_config.yaml`:
-- **`default_zoom`**: HEALPix zoom level (9 recommended for ~4km resolution)
-- **`time_chunk_size`**: Number of time steps per chunk (48 = 2 days)
-- **`spatial_chunk_size`**: HEALPix cells per chunk (~1M recommended)
-- **Dask settings**: Worker count, memory limits, thread configuration
-- **Compression**: Zarr compression settings (zstd level 3)
-
-## Example Usage
-
-### Process 2020 data at zoom level 9:
-```bash
-# Test with one month first (easiest method)
-./run_interactive.sh 2020-01-01 2020-01-31 9
-
-# Manual method
-source activate /global/common/software/m1867/python/hackathon
-python launch_imerg_processing.py 2020-01-01 2020-01-31 9
-
-# Full year via Slurm
-sbatch submit_imerg_job.sh 2020-01-01 2020-12-31 9
-```
-
-### Memory estimation:
-```bash
-python chunking_calculator.py --zoom 9 --time-steps 17520 --variables 3
-```
-
-## Output Format
-
-The processed data is saved as Zarr files with:
-- **Naming**: `imerg_healpix_zoom{zoom}_{start_date}_{end_date}.zarr`
-- **Structure**: Time series of HEALPix-remapped precipitation data
-- **Compression**: zstd level 3 for optimal size/speed balance
-- **Chunks**: Optimized for subsequent analysis workflows
-
-## Dependencies
-
-Required Python packages:
-- `xarray`, `dask`, `zarr`
-- `healpy`, `easygems`
-- `numpy`, `scipy`
-- `pyyaml` (for configuration)
-
-## Troubleshooting
-
-1. **Import errors**: Run `test_setup.py` to check all dependencies
-2. **Memory issues**: Adjust chunk sizes in configuration
-3. **Performance**: Use `chunking_calculator.py` for optimization
-4. **Slurm issues**: Check job logs in `imerg_healpix_*.out` files
-
-## Performance Notes
-
-- **Optimal zoom levels**: 8-10 for most applications (1-4km resolution)
-- **Memory scaling**: ~8GB per million HEALPix cells
-- **Processing time**: ~1-2 hours per year of IMERG data at zoom 9
-- **Storage**: ~50% compression ratio with zstd
-
-## Support
-
-For issues or questions, check:
-1. Test results from `test_setup.py`
-2. Slurm job logs for processing errors
-3. Memory usage reports from `chunking_calculator.py`
