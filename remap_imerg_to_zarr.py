@@ -159,6 +159,64 @@ def setup_dask_client(n_workers=16, threads_per_worker=8, memory_limit='30GB', a
     return client
 
 
+def get_imerg_files(start_date, end_date, base_dir=None):
+    """
+    Get list of IMERG files for the specified date range.
+    
+    Parameters:
+    -----------
+    start_date : datetime
+        Filter files from this date (inclusive)
+    end_date : datetime
+        Filter files to this date (inclusive)
+    base_dir : str, optional
+        Base directory containing yearly subdirectories
+        
+    Returns:
+    --------
+    list : Sorted list of file paths
+    """
+    # Extract year range from dates
+    start_year = start_date.year
+    end_year = end_date.year
+    
+    files = []
+    for year in range(start_year, end_year + 1):
+        year_dir = Path(base_dir) / str(year)
+        if year_dir.exists():
+            year_files = sorted(glob.glob(str(year_dir / "*.nc4")))
+            
+            # Filter files by date range
+            filtered_files = []
+            for file_path in year_files:
+                # Extract date from filename (assuming IMERG naming convention)
+                # Example: 3B-HHR.MS.MRG.3IMERG.20200101-S000000-E002959.0000.V07B.HDF5.nc4
+                try:
+                    filename = Path(file_path).name
+                    # Look for YYYYMMDD pattern in filename
+                    date_match = re.search(r'\.(\d{8})-', filename)
+                    if date_match:
+                        file_date_str = date_match.group(1)
+                        file_date = datetime.strptime(file_date_str, '%Y%m%d')
+                        
+                        # Check if file date is within range
+                        if file_date < start_date or file_date > end_date:
+                            continue
+                        filtered_files.append(file_path)
+                except:
+                    # If we can't parse the date, skip the file
+                    logger.warning(f"Could not parse date from filename: {filename}")
+                    continue
+            
+            files.extend(filtered_files)
+            logger.info(f"Found {len(filtered_files)} files for year {year}")
+        else:
+            logger.warning(f"Directory not found: {year_dir}")
+    
+    logger.info(f"Total files found: {len(files)}")
+    return files
+
+
 def read_imerg_files(files, time_chunk_size=48, max_retries=5):
     """
     Read IMERG files into xarray dataset with validation and retry logic.
@@ -334,64 +392,6 @@ def temporal_average(ds, time_average, convert_time=False):
     })
 
     return ds_avg
-
-
-def get_imerg_files(start_date, end_date, base_dir=None):
-    """
-    Get list of IMERG files for the specified date range.
-    
-    Parameters:
-    -----------
-    start_date : datetime
-        Filter files from this date (inclusive)
-    end_date : datetime
-        Filter files to this date (inclusive)
-    base_dir : str, optional
-        Base directory containing yearly subdirectories
-        
-    Returns:
-    --------
-    list : Sorted list of file paths
-    """
-    # Extract year range from dates
-    start_year = start_date.year
-    end_year = end_date.year
-    
-    files = []
-    for year in range(start_year, end_year + 1):
-        year_dir = Path(base_dir) / str(year)
-        if year_dir.exists():
-            year_files = sorted(glob.glob(str(year_dir / "*.nc4")))
-            
-            # Filter files by date range
-            filtered_files = []
-            for file_path in year_files:
-                # Extract date from filename (assuming IMERG naming convention)
-                # Example: 3B-HHR.MS.MRG.3IMERG.20200101-S000000-E002959.0000.V07B.HDF5.nc4
-                try:
-                    filename = Path(file_path).name
-                    # Look for YYYYMMDD pattern in filename
-                    date_match = re.search(r'\.(\d{8})-', filename)
-                    if date_match:
-                        file_date_str = date_match.group(1)
-                        file_date = datetime.strptime(file_date_str, '%Y%m%d')
-                        
-                        # Check if file date is within range
-                        if file_date < start_date or file_date > end_date:
-                            continue
-                        filtered_files.append(file_path)
-                except:
-                    # If we can't parse the date, skip the file
-                    logger.warning(f"Could not parse date from filename: {filename}")
-                    continue
-            
-            files.extend(filtered_files)
-            logger.info(f"Found {len(filtered_files)} files for year {year}")
-        else:
-            logger.warning(f"Directory not found: {year_dir}")
-    
-    logger.info(f"Total files found: {len(files)}")
-    return files
 
 
 def monitor_zarr_write_progress(output_path, expected_chunks, check_interval=30):

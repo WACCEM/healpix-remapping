@@ -3,7 +3,7 @@
 
 # Data paths
 input_base_dir: "/pscratch/sd/w/wcmca1/GPM/IMERG_V07B_hpss/"
-output_base_dir: "/pscratch/sd/w/wcmca1/GPM/IMERG_V07B_hpss/healpix_test/"
+output_base_dir: "/pscratch/sd/w/wcmca1/GPM/healpix/"
 output_basename: "IMERG_V7"
 weights_dir: "/pscratch/sd/w/wcmca1/GPM/weights/"
 
@@ -22,7 +22,9 @@ dask:
   threads_per_worker: 8      # 8 threads per worker = 128 total threads (matches core count)
   memory_limit: "30GB"       # Conservative: 30GB per worker × 16 workers = 480GB (leaves 32GB for OS)
   
-  # Advanced Perlmutter optimizations
+  # Advanced Perlmutter optimizations (OPTIONAL - comment out if not running on NERSC)
+  # These settings are tuned for Perlmutter hardware and high-throughput processing
+  # The code will run fine with just the basic dask settings above
   scheduler_options:
     idle_timeout: "1800s"    # Keep cluster alive for 30 min after tasks complete
     work_stealing: true      # Enable work stealing for load balancing

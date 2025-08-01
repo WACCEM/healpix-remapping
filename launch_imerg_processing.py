@@ -51,6 +51,11 @@ def main():
     # Load configuration
     config = load_config()
     
+    # Create output directory if it doesn't exist
+    output_dir = Path(config['output_base_dir'])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Output directory: {output_dir}")
+    
     # Use config defaults or command line values
     zoom = zoom or config['default_zoom']
     time_average = config.get('time_average')
