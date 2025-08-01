@@ -77,7 +77,6 @@ python launch_imerg_processing.py 2020-01-01 2020-01-31 9 --overwrite
 ### Processing Pipeline
 - **`remap_imerg_to_zarr.py`** - Main processing script with Dask optimization
 - **`remap_tools.py`** - Core remapping functions with time-series handling
-- **`zarr_tools.py`** - Zarr writing utilities for chunked output
 - **`chunk_tools.py`** - Optimal chunking calculations based on zoom level
 
 ### Configuration & Execution
@@ -119,7 +118,6 @@ remap_imerg_healpix/
 ├── launch_imerg_processing.py         # Main launcher
 ├── remap_imerg_to_zarr.py            # Core processing
 ├── remap_tools.py                    # Remapping functions
-├── zarr_tools.py                     # Zarr utilities
 ├── chunk_tools.py                    # Chunking calculations
 ├── submit_imerg_job.sh               # SLURM job script
 ├── test_setup.py                     # Environment tests
