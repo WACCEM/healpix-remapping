@@ -196,8 +196,26 @@ def coarsen_healpix_data(input_zarr, config, target_zoom=0, temporal_factor=1, o
             ds = ds.isel(time=slice(0, (ds.sizes['time'] // temporal_factor) * temporal_factor))
         
         # Perform temporal coarsening using xarray's coarsen
-        ds = ds.coarsen(time=temporal_factor, boundary='trim').mean()
+        ds_coarsened = ds.coarsen(time=temporal_factor, boundary='trim').mean()
+        
+        # Fix time coordinates to use beginning of time window instead of center
+        # Get the original time coordinates for the beginning of each window
+        original_times = ds.time.values
+        window_starts = original_times[::temporal_factor]  # Every temporal_factor-th time step
+        
+        # Ensure we have the right number of time coordinates
+        n_coarse_times = ds_coarsened.sizes['time']
+        if len(window_starts) >= n_coarse_times:
+            new_times = window_starts[:n_coarse_times]
+        else:
+            # This shouldn't happen with boundary='trim', but just in case
+            new_times = window_starts
+        
+        # Assign the corrected time coordinates
+        ds = ds_coarsened.assign_coords(time=new_times)
         logger.info(f"   After temporal coarsening: {ds.sizes['time']} timesteps")
+        logger.info(f"   Time coordinates corrected to window start times")
+        logger.info(f"   First few corrected times: {ds.time.dt.strftime('%Y-%m-%d %H:%M').values[:4]}")
         
         # Update time resolution in filename info for output naming
         if file_info['time_resolution']:
