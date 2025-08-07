@@ -141,9 +141,10 @@ def extract_info_from_filename(filename):
     }
 
 
-def coarsen_healpix_data(input_zarr, config, target_zoom=0, overwrite=False):
+def coarsen_healpix_data(input_zarr, config, target_zoom=0, temporal_factor=1, overwrite=False):
     """
     Coarsen HEALPix data from high zoom level to progressively lower levels.
+    Optionally performs temporal coarsening (averaging) as well.
     
     Parameters:
     -----------
@@ -153,6 +154,9 @@ def coarsen_healpix_data(input_zarr, config, target_zoom=0, overwrite=False):
         Configuration dictionary
     target_zoom : int
         Target zoom level to coarsen down to (default: 0)
+    temporal_factor : int
+        Temporal coarsening factor (default: 1, no temporal coarsening)
+        e.g., 3 for 1H->3H, 6 for 1H->6H, 24 for 1H->1D
     overwrite : bool
         Whether to overwrite existing files
     """
@@ -178,6 +182,36 @@ def coarsen_healpix_data(input_zarr, config, target_zoom=0, overwrite=False):
     ds = xr.open_zarr(input_zarr)
     logger.info(f"Dataset loaded: {ds.sizes}")
     logger.info(f"Variables: {list(ds.data_vars)}")
+    
+    # Apply temporal coarsening first if requested
+    if temporal_factor > 1:
+        logger.info(f"🕒 Applying temporal coarsening: factor {temporal_factor}")
+        logger.info(f"   Original time dimension: {ds.sizes['time']} timesteps")
+        
+        # Check if temporal coarsening is possible
+        if ds.sizes['time'] % temporal_factor != 0:
+            logger.warning(f"Time dimension ({ds.sizes['time']}) not evenly divisible by temporal_factor ({temporal_factor})")
+            logger.warning(f"Will truncate to {(ds.sizes['time'] // temporal_factor) * temporal_factor} timesteps")
+            # Truncate to make it evenly divisible
+            ds = ds.isel(time=slice(0, (ds.sizes['time'] // temporal_factor) * temporal_factor))
+        
+        # Perform temporal coarsening using xarray's coarsen
+        ds = ds.coarsen(time=temporal_factor, boundary='trim').mean()
+        logger.info(f"   After temporal coarsening: {ds.sizes['time']} timesteps")
+        
+        # Update time resolution in filename info for output naming
+        if file_info['time_resolution']:
+            original_res = file_info['time_resolution']
+            if original_res.endswith('H'):
+                new_hours = int(original_res[:-1]) * temporal_factor
+                if new_hours >= 24 and new_hours % 24 == 0:
+                    file_info['time_resolution'] = f"{new_hours // 24}D"
+                else:
+                    file_info['time_resolution'] = f"{new_hours}H"
+            elif original_res.endswith('D'):
+                new_days = int(original_res[:-1]) * temporal_factor
+                file_info['time_resolution'] = f"{new_days}D"
+            logger.info(f"   Updated time resolution: {original_res} -> {file_info['time_resolution']}")
     
     # Get output directory from config
     output_dir = Path(config['output_base_dir'])
@@ -228,6 +262,7 @@ def coarsen_healpix_data(input_zarr, config, target_zoom=0, overwrite=False):
             'coarsened_from_zoom': zoom_level + 1,
             'coarsening_method': 'mean',
             'coarsening_factor': 4,
+            'temporal_coarsening_factor': temporal_factor if temporal_factor > 1 else None,
             'processing_timestamp': datetime.now().isoformat(),
             'source_file': str(input_path.name)
         })
@@ -280,13 +315,15 @@ def main():
     logger = logging.getLogger()
     
     if len(sys.argv) < 2:
-        print("Usage: python coarsen_healpix.py <input_zarr_file> [--target_zoom N] [--overwrite]")
+        print("Usage: python coarsen_healpix.py <input_zarr_file> [--target_zoom N] [--temporal_factor N] [--overwrite]")
         print("Example: python coarsen_healpix.py IMERG_V7_1H_zoom9_20200101_20200131.zarr --target_zoom 5")
-        print("Example: python coarsen_healpix.py IMERG_V7_1H_zoom9_20200101_20200131.zarr --overwrite")
+        print("Example: python coarsen_healpix.py IMERG_V7_1H_zoom9_20200101_20200131.zarr --temporal_factor 3")
+        print("Example: python coarsen_healpix.py IMERG_V7_1H_zoom9_20200101_20200131.zarr --target_zoom 5 --temporal_factor 6 --overwrite")
         sys.exit(1)
     
     input_file = sys.argv[1]
     target_zoom = 0
+    temporal_factor = 1
     overwrite = False
     
     # Parse optional arguments
@@ -294,6 +331,9 @@ def main():
     while i < len(sys.argv):
         if sys.argv[i] == '--target_zoom' and i + 1 < len(sys.argv):
             target_zoom = int(sys.argv[i + 1])
+            i += 2
+        elif sys.argv[i] == '--temporal_factor' and i + 1 < len(sys.argv):
+            temporal_factor = int(sys.argv[i + 1])
             i += 2
         elif sys.argv[i] == '--overwrite':
             overwrite = True
@@ -325,6 +365,7 @@ def main():
     
     logger.info(f"Input file: {input_path}")
     logger.info(f"Target zoom level: {target_zoom}")
+    logger.info(f"Temporal coarsening factor: {temporal_factor}")
     logger.info(f"Overwrite existing files: {overwrite}")
     logger.info(f"Output directory: {config['output_base_dir']}")
     
@@ -334,6 +375,7 @@ def main():
             input_zarr=str(input_path),
             config=config,
             target_zoom=target_zoom,
+            temporal_factor=temporal_factor,
             overwrite=overwrite
         )
         
