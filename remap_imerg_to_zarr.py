@@ -87,8 +87,7 @@ import threading
 import dask
 from dask.distributed import Client
 from dask.diagnostics import ProgressBar, ResourceProfiler, CacheProfiler
-import remap_tools
-import chunk_tools
+from src import remap_tools, chunk_tools
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
