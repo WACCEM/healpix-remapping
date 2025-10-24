@@ -1,0 +1,69 @@
+# IMERG to HEALPix Processing Configuration
+# Optimized for NERSC Perlmutter (128-core, 512GB RAM compute nodes)
+
+# Data paths
+input_base_dir: "/pscratch/sd/w/wcmca1/GPM/IR_IMERG_Combined_V07B/"
+output_base_dir: "/pscratch/sd/w/wcmca1/GPM/healpix/"
+output_basename: "IR_IMERG_V7"
+weights_dir: "/pscratch/sd/w/wcmca1/GPM/weights/"
+
+# File search pattern configuration
+# These parameters control how files are discovered and filtered by date
+# Filename format: merg_YYYYMMDDhh_10km-pixel.nc (e.g., merg_2020010100_10km-pixel.nc)
+date_pattern: "_(\\d{10})_"    # Regex to extract YYYYMMDDhh (10 digits between underscores)
+date_format: "%Y%m%d%H"        # strptime format: YYYY=year, MM=month, DD=day, HH=hour
+use_year_subdirs: true         # Files organized in yearly subdirectories (YYYY/)
+file_glob: "merg_*.nc"         # Glob pattern to match files (merg_*.nc)
+
+# Processing parameters  
+default_zoom: 9
+time_chunk_size: 24  # 1 day worth of 1-hour data (balance memory vs parallelism)
+time_average: null  # Options: null (no averaging), "1h" (1-hour), "3h", "6h", "1d" (daily), etc.
+convert_time: True   # Convert cftime.DatetimeJulian to standard datetime64 for pandas compatibility
+# Note: spatial_chunk_size is automatically computed based on zoom level using chunk_tools.compute_chunksize()
+force_recompute: False    # Force recompute weight file even if it exists
+
+# Dask configuration optimized for NERSC Perlmutter
+# Hardware: 2x AMD EPYC 7763 (128 cores total), 512 GB RAM, 4 NUMA domains per socket
+dask:
+  n_workers: 16              # Use 16 workers to respect NUMA topology (4 per socket, 2 per NUMA domain)
+  threads_per_worker: 8      # 8 threads per worker = 128 total threads (matches core count)
+  memory_limit: "30GB"       # Conservative: 30GB per worker × 16 workers = 480GB (leaves 32GB for OS)
+  
+  # Advanced Perlmutter optimizations (OPTIONAL - comment out if not running on NERSC)
+  # These settings are tuned for Perlmutter hardware and high-throughput processing
+  # The code will run fine with just the basic dask settings above
+  scheduler_options:
+    idle_timeout: "1800s"    # Keep cluster alive for 30 min after tasks complete
+    work_stealing: true      # Enable work stealing for load balancing
+    
+  worker_options:
+    nthreads: 8              # Threads per worker (same as threads_per_worker)
+    memory_limit: "30GB"     # Memory per worker
+    memory_target_fraction: 0.8    # Start spilling to disk at 80% memory usage
+    memory_spill_fraction: 0.9     # Spill aggressively at 90%
+    
+  # Connection settings for high-throughput
+  communication:
+    tcp:
+      tcp_timeout: 30s
+      tcp_user_timeout: 30s
+  
+# Compression settings for Zarr
+compression:
+  compressor: "zstd"
+  compressor_level: 3
+  dtype: "float32"
+
+# Variable filtering
+skip_variables:
+  - "*_bnds"
+  - "*_bounds"
+  - "time_bnds"
+  - "lat_bnds" 
+  - "lon_bnds"
+
+# Only process variables with these dimensions
+required_dimensions:
+  - ["time", "lat", "lon"]
+  - ["time", "lon", "lat"]

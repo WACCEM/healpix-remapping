@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""
-Efficient script to remap multi-year IMERG datasets to HEALPix and save as Zarr.
+r"""
+Efficient script to remap gridded lat/lon datasets to HEALPix and save as Zarr.
 Optimized for NERSC Perlmutter with Dask lazy evaluation and chunking.
 
-This script processes IMERG precipitation data through a complete pipeline:
-1. Read IMERG files from input directory
-2. Apply temporal averaging (e.g., 30min → 1h)
+Originally developed for IMERG precipitation data, this script has been generalized
+to work with any gridded lat/lon NetCDF dataset.
+
+Pipeline Overview:
+1. Read NetCDF files from input directory (with flexible file pattern matching)
+2. Apply temporal averaging (e.g., 30min → 1h, optional)
 3. Remap from lat/lon to HEALPix grid using Delaunay triangulation
 4. Write optimized Zarr output with compression and chunking
 
@@ -17,7 +20,13 @@ Required Parameters:
     end_date : datetime - Ending date (inclusive)  
     zoom : int - HEALPix zoom level (order)
     output_zarr : str - Output Zarr path
-    input_base_dir : str - Base directory containing yearly IMERG subdirectories
+    input_base_dir : str - Base directory containing data files
+
+File Pattern Parameters:
+    date_pattern : str - Regex to extract date from filename (default: r'\.(\d{8})-')
+    date_format : str - strptime format for parsing (default: '%Y%m%d')
+    use_year_subdirs : bool - Search yearly subdirs (default: True)
+    file_glob : str - File matching pattern (default: '*.nc*')
 
 Optional Parameters:
     weights_file : str - Path for caching remapping weights
@@ -27,7 +36,9 @@ Optional Parameters:
     overwrite : bool - Overwrite existing files (default: False)
     dask_config : dict - Dask configuration parameters
 
-Example:
+Examples:
+    
+    # Example 1: Original IMERG data (default settings)
     from datetime import datetime
     from remap_imerg_to_zarr import process_imerg_to_zarr
     
@@ -35,12 +46,30 @@ Example:
         start_date=datetime(2020, 1, 1),
         end_date=datetime(2020, 1, 31),
         zoom=9,
-        output_zarr="/path/to/output.zarr",
+        output_zarr="/path/to/imerg_output.zarr",
         input_base_dir="/path/to/IMERG_data",
         time_average="1h",
         convert_time=True,
         overwrite=True
     )
+    
+    # Example 2: ir_imerg data (hourly files, flat directory)
+    # Filename: merg_2020123108_10km-pixel.nc
+    process_imerg_to_zarr(
+        start_date=datetime(2020, 12, 31, 8),
+        end_date=datetime(2020, 12, 31, 18),
+        zoom=9,
+        output_zarr="/path/to/ir_imerg_output.zarr",
+        input_base_dir="/path/to/ir_imerg_data",
+        date_pattern=r'_(\d{10})_',      # YYYYMMDDhh pattern
+        date_format='%Y%m%d%H',          # Parse with hour
+        use_year_subdirs=False,          # Flat directory structure
+        file_glob='*.nc',
+        convert_time=True,
+        overwrite=True
+    )
+
+See FILE_PATTERN_GUIDE.md for more examples and pattern configuration help.
 """
 
 import xarray as xr
@@ -159,9 +188,15 @@ def setup_dask_client(n_workers=16, threads_per_worker=8, memory_limit='30GB', a
     return client
 
 
-def get_imerg_files(start_date, end_date, base_dir=None):
-    """
-    Get list of IMERG files for the specified date range.
+def get_imerg_files(start_date, end_date, base_dir=None, 
+                   date_pattern=r'\.(\d{8})-', date_format='%Y%m%d',
+                   use_year_subdirs=True, file_glob='*.nc*'):
+    r"""
+    Get list of files for the specified date range with flexible date pattern matching.
+    
+    This function searches for files containing date information in their filenames
+    and filters them based on the specified date range. It supports different
+    filename conventions through customizable regex patterns and date formats.
     
     Parameters:
     -----------
@@ -170,51 +205,162 @@ def get_imerg_files(start_date, end_date, base_dir=None):
     end_date : datetime
         Filter files to this date (inclusive)
     base_dir : str, optional
-        Base directory containing yearly subdirectories
+        Base directory containing data files or yearly subdirectories
+    date_pattern : str, optional
+        Regex pattern to extract date string from filename. Use parentheses to 
+        capture the date string group. Default: r'\.(\d{8})-' for IMERG format.
+        Examples:
+            IMERG: r'\.(\d{8})-' matches '.20200101-' 
+            ir_imerg: r'_(\d{10})_' matches '_2020123108_' (YYYYMMDDhh)
+            Generic: r'(\d{8})' matches any 8-digit sequence
+    date_format : str, optional
+        strptime format string to parse the captured date string.
+        Default: '%Y%m%d' for YYYYMMDD format.
+        Examples:
+            IMERG: '%Y%m%d' for YYYYMMDD
+            ir_imerg: '%Y%m%d%H' for YYYYMMDDhh
+            With separator: '%Y-%m-%d' for YYYY-MM-DD
+    use_year_subdirs : bool, optional
+        If True, search in yearly subdirectories (base_dir/YYYY/).
+        If False, search directly in base_dir. Default: True
+    file_glob : str, optional
+        Glob pattern for file matching. Default: '*.nc*'
         
     Returns:
     --------
-    list : Sorted list of file paths
+    list : Sorted list of file paths matching the date range
+    
+    Examples:
+    ---------
+    # IMERG format: 3B-HHR.MS.MRG.3IMERG.20200101-S000000-E002959.0000.V07B.HDF5.nc4
+    files = get_imerg_files(start_date, end_date, base_dir='/data/imerg',
+                           date_pattern=r'\.(\d{8})-', date_format='%Y%m%d')
+    
+    # ir_imerg format: merg_2020123108_10km-pixel.nc
+    files = get_imerg_files(start_date, end_date, base_dir='/data/ir_imerg',
+                           date_pattern=r'_(\d{10})_', date_format='%Y%m%d%H',
+                           use_year_subdirs=False)
+    
+    # Generic format: data_20200101.nc
+    files = get_imerg_files(start_date, end_date, base_dir='/data/generic',
+                           date_pattern=r'_(\d{8})\.', date_format='%Y%m%d',
+                           use_year_subdirs=False)
     """
     # Extract year range from dates
     start_year = start_date.year
     end_year = end_date.year
     
+    # Compile regex pattern for efficiency
+    try:
+        date_regex = re.compile(date_pattern)
+    except re.error as e:
+        raise ValueError(f"Invalid regex pattern '{date_pattern}': {e}")
+    
     files = []
-    for year in range(start_year, end_year + 1):
-        year_dir = Path(base_dir) / str(year)
-        if year_dir.exists():
-            year_files = sorted(glob.glob(str(year_dir / "*.nc4")))
+    
+    if use_year_subdirs:
+        # Search in yearly subdirectories
+        for year in range(start_year, end_year + 1):
+            year_dir = Path(base_dir) / str(year)
+            if year_dir.exists():
+                year_files = sorted(glob.glob(str(year_dir / file_glob)))
+                
+                # Filter files by date range
+                filtered_files = filter_files_by_date(
+                    year_files, start_date, end_date, 
+                    date_regex, date_format
+                )
+                
+                files.extend(filtered_files)
+                logger.info(f"Found {len(filtered_files)} files for year {year}")
+            else:
+                logger.warning(f"Directory not found: {year_dir}")
+    else:
+        # Search directly in base directory
+        base_path = Path(base_dir)
+        if base_path.exists():
+            all_files = sorted(glob.glob(str(base_path / file_glob)))
             
             # Filter files by date range
-            filtered_files = []
-            for file_path in year_files:
-                # Extract date from filename (assuming IMERG naming convention)
-                # Example: 3B-HHR.MS.MRG.3IMERG.20200101-S000000-E002959.0000.V07B.HDF5.nc4
-                try:
-                    filename = Path(file_path).name
-                    # Look for YYYYMMDD pattern in filename
-                    date_match = re.search(r'\.(\d{8})-', filename)
-                    if date_match:
-                        file_date_str = date_match.group(1)
-                        file_date = datetime.strptime(file_date_str, '%Y%m%d')
-                        
-                        # Check if file date is within range
-                        if file_date < start_date or file_date > end_date:
-                            continue
-                        filtered_files.append(file_path)
-                except:
-                    # If we can't parse the date, skip the file
-                    logger.warning(f"Could not parse date from filename: {filename}")
-                    continue
+            filtered_files = filter_files_by_date(
+                all_files, start_date, end_date,
+                date_regex, date_format
+            )
             
             files.extend(filtered_files)
-            logger.info(f"Found {len(filtered_files)} files for year {year}")
+            logger.info(f"Found {len(filtered_files)} files in {base_dir}")
         else:
-            logger.warning(f"Directory not found: {year_dir}")
+            logger.warning(f"Directory not found: {base_dir}")
     
     logger.info(f"Total files found: {len(files)}")
+    
+    if len(files) == 0:
+        logger.warning(f"No files found matching pattern '{date_pattern}' in date range {start_date} to {end_date}")
+        logger.warning(f"Check that date_pattern and date_format are correct for your filenames")
+    
     return files
+
+
+def filter_files_by_date(file_list, start_date, end_date, date_regex, date_format):
+    """
+    Filter a list of files based on dates extracted from filenames.
+    
+    Parameters:
+    -----------
+    file_list : list
+        List of file paths to filter
+    start_date : datetime
+        Starting date (inclusive)
+    end_date : datetime
+        Ending date (inclusive)
+    date_regex : re.Pattern
+        Compiled regex pattern to extract date string
+    date_format : str
+        strptime format string to parse the date
+        
+    Returns:
+    --------
+    list : Filtered list of file paths within date range
+    """
+    filtered_files = []
+    skipped_count = 0
+    
+    for file_path in file_list:
+        filename = Path(file_path).name
+        
+        try:
+            # Extract date string using regex
+            date_match = date_regex.search(filename)
+            
+            if date_match:
+                # Get the first captured group (the date string)
+                file_date_str = date_match.group(1)
+                
+                # Parse the date string
+                file_date = datetime.strptime(file_date_str, date_format)
+                
+                # Check if file date is within range
+                if start_date <= file_date <= end_date:
+                    filtered_files.append(file_path)
+                else:
+                    skipped_count += 1
+            else:
+                logger.debug(f"No date match in filename: {filename}")
+                skipped_count += 1
+                
+        except ValueError as e:
+            # Date parsing error
+            logger.warning(f"Could not parse date from filename '{filename}': {e}")
+            skipped_count += 1
+        except Exception as e:
+            # Other errors
+            logger.warning(f"Error processing filename '{filename}': {e}")
+            skipped_count += 1
+    
+    if skipped_count > 0:
+        logger.debug(f"Skipped {skipped_count} files (outside date range or unparseable)")
+    
+    return filtered_files
 
 
 def read_imerg_files(files, time_chunk_size=48, max_retries=5):
@@ -600,9 +746,14 @@ def write_zarr_with_monitoring(ds_remap, output_zarr, time_chunk_size=48, zoom=9
 def process_imerg_to_zarr(start_date, end_date, zoom, output_zarr, input_base_dir,
                          weights_file=None, time_chunk_size=48,
                          force_recompute=False, overwrite=False,
-                         time_average=None, convert_time=False, dask_config=None):
-    """
-    Main function to process IMERG data to HEALPix Zarr with optimized processing pipeline.
+                         time_average=None, convert_time=False, dask_config=None,
+                         date_pattern=r'\.(\d{8})-', date_format='%Y%m%d',
+                         use_year_subdirs=True, file_glob='*.nc*'):
+    r"""
+    Main function to process gridded data to HEALPix Zarr with optimized processing pipeline.
+    
+    This function was originally designed for IMERG data but has been generalized to 
+    work with any gridded lat/lon NetCDF dataset.
     
     Parameters:
     -----------
@@ -615,9 +766,9 @@ def process_imerg_to_zarr(start_date, end_date, zoom, output_zarr, input_base_di
     output_zarr : str
         Output Zarr path
     input_base_dir : str
-        Base directory containing yearly IMERG subdirectories (required)
+        Base directory containing data files or yearly subdirectories (required)
     weights_file : str, optional
-        Weights file path
+        Weights file path for caching remapping weights
     time_chunk_size : int
         Time chunk size for processing (default: 48 for 2 days)
     force_recompute : bool, default=False
@@ -632,6 +783,50 @@ def process_imerg_to_zarr(start_date, end_date, zoom, output_zarr, input_base_di
         This makes the dataset compatible with pandas operations
     dask_config : dict, optional
         Dask configuration parameters (n_workers, threads_per_worker, memory_limit)
+    date_pattern : str, optional
+        Regex pattern to extract date string from filename (default: r'\.(\d{8})-')
+        Examples:
+            IMERG: r'\.(\d{8})-' matches '.20200101-'
+            ir_imerg: r'_(\d{10})_' matches '_2020123108_'
+    date_format : str, optional
+        strptime format string to parse the date (default: '%Y%m%d')
+        Examples:
+            IMERG: '%Y%m%d' for YYYYMMDD
+            ir_imerg: '%Y%m%d%H' for YYYYMMDDhh
+    use_year_subdirs : bool, optional
+        If True, search in yearly subdirectories (default: True for IMERG)
+        If False, search directly in input_base_dir
+    file_glob : str, optional
+        Glob pattern for file matching (default: '*.nc*')
+    
+    Returns:
+    --------
+    xr.Dataset : The processed and remapped dataset
+    
+    Examples:
+    ---------
+    # IMERG data (original use case)
+    process_imerg_to_zarr(
+        start_date=datetime(2020, 1, 1),
+        end_date=datetime(2020, 1, 31),
+        zoom=9,
+        output_zarr="/path/to/output.zarr",
+        input_base_dir="/data/IMERG",
+        time_average="1h"
+    )
+    
+    # ir_imerg data (new format)
+    process_imerg_to_zarr(
+        start_date=datetime(2020, 12, 31, 8),
+        end_date=datetime(2020, 12, 31, 18),
+        zoom=9,
+        output_zarr="/path/to/output.zarr",
+        input_base_dir="/data/ir_imerg",
+        date_pattern=r'_(\d{10})_',
+        date_format='%Y%m%d%H',
+        use_year_subdirs=False,
+        file_glob='*.nc'
+    )
     
     Note:
     -----
@@ -657,7 +852,13 @@ def process_imerg_to_zarr(start_date, end_date, zoom, output_zarr, input_base_di
     
     try:
         # Get file list for date range
-        files = get_imerg_files(start_date, end_date, input_base_dir)
+        files = get_imerg_files(
+            start_date, end_date, input_base_dir,
+            date_pattern=date_pattern,
+            date_format=date_format,
+            use_year_subdirs=use_year_subdirs,
+            file_glob=file_glob
+        )
         if not files:
             raise ValueError("No files found for the specified period")
                
