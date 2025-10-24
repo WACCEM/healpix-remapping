@@ -23,36 +23,36 @@ Configuration:
 import sys
 import yaml
 from pathlib import Path
-from datetime import datetime
 from remap_imerg_to_zarr import process_imerg_to_zarr
+from src.utilities import parse_date
 
 def load_config(config_path="tb_imerg_config.yaml"):
     """Load configuration from YAML file"""
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
-def parse_date(date_str):
-    """Parse date string in YYYY-MM-DD format"""
-    try:
-        return datetime.strptime(date_str, "%Y-%m-%d")
-    except ValueError:
-        raise ValueError(f"Invalid date format: {date_str}. Use YYYY-MM-DD")
-
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python launch_imerg_processing.py <start_date> <end_date> [zoom_level] [--overwrite]")
-        print("Example: python launch_imerg_processing.py 2020-01-01 2020-12-31 9")
-        print("Example: python launch_imerg_processing.py 2020-01-01 2020-12-31 9 --overwrite")
+        print("Usage: python launch_ir_imerg_processing.py <start_date> <end_date> [zoom_level] [--overwrite]")
+        print("\nDate formats:")
+        print("  YYYY-MM-DD       - Date only (end_date extends to 23:59:59)")
+        print("  YYYY-MM-DDTHH    - Date with hour (end_date extends to HH:59:59)")
+        print("  YYYY-MM-DD HH    - Date with hour, space separated")
+        print("\nExamples:")
+        print("  python launch_ir_imerg_processing.py 2020-01-01 2020-12-31 9")
+        print("  python launch_ir_imerg_processing.py 2020-01-01T00 2020-01-03T23 9")
+        print("  python launch_ir_imerg_processing.py '2020-01-01 00' '2020-01-03 23' 9")
+        print("  python launch_ir_imerg_processing.py 2020-01-01 2020-12-31 9 --overwrite")
         sys.exit(1)
     
     # Parse command line arguments
-    start_date = parse_date(sys.argv[1])
-    end_date = parse_date(sys.argv[2])
+    start_date = parse_date(sys.argv[1], is_end_date=False)
+    end_date = parse_date(sys.argv[2], is_end_date=True)
     config_path = "/global/homes/f/feng045/program/hackathon/remap_imerg/config/tb_imerg_config.yaml"
     
     # Parse zoom level (optional)
     zoom = None
-    overwrite = False
+    overwrite = True
     
     # Process remaining arguments
     for arg in sys.argv[3:]:
@@ -90,13 +90,18 @@ def main():
     # Use pathlib to properly construct the path (handles extra slashes automatically)
     output_file = str(Path(config['output_base_dir']) / filename)
 
-    print(f"Processing IR+IMERG data from {start_date.date()} to {end_date.date()}")
-    print(f"HEALPix zoom level: {zoom}")
+    print(f"\n{'='*70}")
+    print(f"Processing IR+IMERG data")
+    print(f"{'='*70}")
+    print(f"Date range:")
+    print(f"  Start: {start_date.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  End:   {end_date.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"\nHEALPix zoom level: {zoom}")
     if time_average:
         print(f"Temporal averaging: {time_average}")
     else:
         print("Temporal averaging: None (30-minute resolution)")
-    print(f"Output file: {output_file}")
+    print(f"\nOutput file: {output_file}")
     if overwrite:
         print("⚠️  Overwrite mode enabled - existing files will be replaced")
     

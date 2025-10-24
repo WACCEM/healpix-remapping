@@ -9,11 +9,9 @@ This module contains helper functions for:
 - Temporal averaging operations
 """
 
-import xarray as xr
 import pandas as pd
 import glob
 import re
-import time
 from datetime import datetime
 from pathlib import Path
 import logging
@@ -22,6 +20,76 @@ from dask.distributed import Client
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+
+def parse_date(date_str, is_end_date=False):
+    """
+    Parse date string with flexible format support.
+    
+    Supports multiple formats:
+    - YYYY-MM-DD: Date only (hours will be set to 00:00 for start, 23:59:59 for end)
+    - YYYY-MM-DDTHH: Date with hour (minutes set to 00 for start, 59 for end)
+    - YYYY-MM-DD HH: Date with hour (space separator)
+    
+    Parameters:
+    -----------
+    date_str : str
+        Date string to parse
+    is_end_date : bool
+        If True and only date provided, extend to end of day (23:59:59)
+        If True and hour provided, extend to end of hour (HH:59:59)
+    
+    Returns:
+    --------
+    datetime : Parsed datetime object
+    
+    Examples:
+    ---------
+    # Start date (date only)
+    >>> parse_date('2020-01-01', is_end_date=False)
+    datetime.datetime(2020, 1, 1, 0, 0, 0)
+    
+    # End date (date only) - extends to end of day
+    >>> parse_date('2020-01-03', is_end_date=True)
+    datetime.datetime(2020, 1, 3, 23, 59, 59)
+    
+    # End date with hour - extends to end of hour
+    >>> parse_date('2020-01-03T12', is_end_date=True)
+    datetime.datetime(2020, 1, 3, 12, 59, 59)
+    """
+    # Try different formats
+    formats = [
+        ("%Y-%m-%dT%H", "hour_with_T"),      # 2020-01-03T23
+        ("%Y-%m-%d %H", "hour_with_space"),  # 2020-01-03 23
+        ("%Y-%m-%d", "date_only"),           # 2020-01-03
+    ]
+    
+    for fmt, fmt_type in formats:
+        try:
+            dt = datetime.strptime(date_str, fmt)
+            
+            # Extend to end of period if this is an end date
+            if is_end_date:
+                if fmt_type == "date_only":
+                    # Extend to end of day: 23:59:59
+                    dt = dt.replace(hour=23, minute=59, second=59)
+                elif fmt_type in ["hour_with_T", "hour_with_space"]:
+                    # Extend to end of hour: HH:59:59
+                    dt = dt.replace(minute=59, second=59)
+            
+            return dt
+            
+        except ValueError:
+            continue
+    
+    # If none of the formats work, raise error with helpful message
+    raise ValueError(
+        f"Invalid date format: '{date_str}'\n"
+        f"Supported formats:\n"
+        f"  - YYYY-MM-DD (e.g., 2020-01-03)\n"
+        f"  - YYYY-MM-DDTHH (e.g., 2020-01-03T23)\n"
+        f"  - YYYY-MM-DD HH (e.g., 2020-01-03 23)"
+    )
 
 
 def convert_cftime_to_datetime64(ds):
