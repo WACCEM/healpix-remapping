@@ -42,12 +42,21 @@ dask:
     memory_limit: "30GB"     # Memory per worker
     memory_target_fraction: 0.8    # Start spilling to disk at 80% memory usage
     memory_spill_fraction: 0.9     # Spill aggressively at 90%
+    death_timeout: "300s"    # Allow 5 min for worker to report death before assuming it's dead
     
-  # Connection settings for high-throughput
+  # Connection settings for high-throughput and long-running operations
   communication:
     tcp:
-      tcp_timeout: 30s
-      tcp_user_timeout: 30s
+      tcp_timeout: 120s             # Increased from 30s for large writes
+      tcp_user_timeout: 120s        # Increased from 30s
+    timeouts:
+      connect: 120s                 # Time to establish connection
+      tcp: 120s                     # TCP operation timeout
+  
+  # Client settings for cleanup operations
+  client_options:
+    timeout: "300s"          # Client operations timeout (including cleanup) - increased from 60s default
+    heartbeat_interval: "5s" # How often client checks cluster health
   
 # Compression settings for Zarr
 compression:

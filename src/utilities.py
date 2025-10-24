@@ -142,7 +142,10 @@ def setup_dask_client(n_workers=16, threads_per_worker=8, memory_limit='30GB', a
     memory_limit : str
         Memory limit per worker (30GB × 16 = 480GB, leaves headroom for OS)
     advanced_config : dict, optional
-        Advanced Dask configuration options
+        Advanced Dask configuration options including:
+        - communication settings (tcp timeouts, etc.)
+        - client_options (timeout, heartbeat_interval)
+        - worker_options (death_timeout, etc.)
     """
     
     # Set Dask configuration for high-performance computing
@@ -150,16 +153,42 @@ def setup_dask_client(n_workers=16, threads_per_worker=8, memory_limit='30GB', a
         'distributed.worker.memory.target': 0.8,      # Target 80% memory usage before spilling
         'distributed.worker.memory.spill': 0.9,       # Spill at 90% memory usage
         'distributed.worker.memory.pause': 0.95,      # Pause worker at 95% memory
-        'distributed.comm.timeouts.tcp': '30s',       # TCP timeout
+        'distributed.comm.timeouts.tcp': '30s',       # TCP timeout (can be overridden)
+        'distributed.comm.timeouts.connect': '30s',   # Connection timeout
         'distributed.comm.compression': 'lz4',        # Fast compression for network
         'array.slicing.split_large_chunks': True,     # Handle large chunks better
+        'distributed.client.heartbeat': '5s',         # Client heartbeat interval
     }
     
     # Apply advanced configuration if provided
+    client_timeout = '300s'  # Default client timeout for cleanup operations
     if advanced_config:
+        # Extract client-specific options before updating dask_config
+        client_opts = advanced_config.pop('client_options', {})
+        if 'timeout' in client_opts:
+            client_timeout = client_opts['timeout']
+        if 'heartbeat_interval' in client_opts:
+            dask_config['distributed.client.heartbeat'] = client_opts['heartbeat_interval']
+        
+        # Update with remaining advanced config
         dask_config.update(advanced_config)
         
     dask.config.set(dask_config)
+    
+    # Parse timeout string to seconds (handle formats like "300s", "5m", etc.)
+    import re
+    timeout_match = re.match(r'(\d+)([smh]?)', str(client_timeout))
+    if timeout_match:
+        value, unit = timeout_match.groups()
+        value = int(value)
+        if unit == 'm':
+            timeout_seconds = value * 60
+        elif unit == 'h':
+            timeout_seconds = value * 3600
+        else:  # 's' or empty
+            timeout_seconds = value
+    else:
+        timeout_seconds = 300  # Default 5 minutes
     
     # Create client with optimized settings
     client = Client(
@@ -168,6 +197,7 @@ def setup_dask_client(n_workers=16, threads_per_worker=8, memory_limit='30GB', a
         memory_limit=memory_limit,
         silence_logs=logging.ERROR,
         dashboard_address=':8787',  # Enable dashboard on port 8787
+        timeout=timeout_seconds,     # Client operation timeout (including cleanup)
         # Additional performance settings
         serializers=['dask', 'pickle'],
         deserializers=['dask', 'pickle', 'error'],
@@ -178,6 +208,7 @@ def setup_dask_client(n_workers=16, threads_per_worker=8, memory_limit='30GB', a
     logger.info(f"   Workers: {n_workers} × {threads_per_worker} threads = {n_workers * threads_per_worker} total threads")
     logger.info(f"   Memory: {memory_limit}/worker × {n_workers} workers = {n_workers * int(memory_limit.replace('GB', ''))}GB total")
     logger.info(f"   NUMA-aware: {n_workers} workers distributed across NUMA domains")
+    logger.info(f"   Client timeout: {client_timeout} ({timeout_seconds}s) for cleanup operations")
     
     return client
 

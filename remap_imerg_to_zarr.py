@@ -73,8 +73,8 @@ See FILE_PATTERN_GUIDE.md for more examples and pattern configuration help.
 """
 
 import xarray as xr
+import pandas as pd
 import time
-from datetime import datetime
 import warnings
 import logging
 from src import remap_tools, utilities, zarr_tools
@@ -208,12 +208,76 @@ def read_imerg_files(files, time_chunk_size=48, max_retries=5):
     return ds
 
 
+def subset_time_by_minute(ds, time_subset):
+    """
+    Subset dataset by selecting specific minute values within each hour.
+    
+    This function is useful when data at different time resolutions have identical 
+    values (e.g., hourly-averaged precipitation stored at 30-minute intervals).
+    
+    Parameters:
+    -----------
+    ds : xr.Dataset
+        Input dataset with time dimension
+    time_subset : str
+        Minute selection option:
+        - '00min': Keep only times at ~00 minutes (e.g., 00:00, 01:00, 02:00)
+        - '30min': Keep only times at ~30 minutes (e.g., 00:30, 01:30, 02:30)
+    
+    Returns:
+    --------
+    xr.Dataset : Dataset with subset of time steps
+    
+    Raises:
+    -------
+    ValueError : If time_subset is not '00min' or '30min'
+    
+    Notes:
+    ------
+    Uses ±5 minute tolerance to handle slight timing variations in data files.
+    Handles both cftime and numpy datetime64 time coordinates.
+    """
+    logger.info(f"Subsetting time steps by minute value: '{time_subset}'")
+    original_times = ds.sizes['time']
+    
+    # Extract minute values from time coordinate
+    # Handle both cftime and numpy datetime64
+    if hasattr(ds.time.values[0], 'minute'):
+        # cftime objects
+        minutes = [t.minute for t in ds.time.values]
+    else:
+        # numpy datetime64 - convert to pandas for minute extraction
+        minutes = pd.to_datetime(ds.time.values).minute.values
+    
+    # Create mask based on time_subset parameter
+    if time_subset == '00min':
+        # Keep times close to 00 minutes (within ±5 minutes tolerance)
+        mask = [abs(m) <= 5 or abs(m - 60) <= 5 for m in minutes]
+        logger.info(f"Keeping time steps at approximately 00 minutes per hour")
+    elif time_subset == '30min':
+        # Keep times close to 30 minutes (within ±5 minutes tolerance)
+        mask = [abs(m - 30) <= 5 for m in minutes]
+        logger.info(f"Keeping time steps at approximately 30 minutes per hour")
+    else:
+        raise ValueError(f"Invalid time_subset value: '{time_subset}'. Must be '00min' or '30min'")
+    
+    # Apply the mask
+    ds_subset = ds.isel(time=mask)
+    subset_times = ds_subset.sizes['time']
+    
+    logger.info(f"Time steps: {original_times} → {subset_times} ({subset_times/original_times*100:.1f}% retained)")
+    logger.info(f"Reduction: {original_times - subset_times} time steps removed")
+    
+    return ds_subset
+
+
 def process_imerg_to_zarr(start_date, end_date, zoom, output_zarr, input_base_dir,
                          weights_file=None, time_chunk_size=48,
                          force_recompute=False, overwrite=False,
                          time_average=None, convert_time=False, dask_config=None,
                          date_pattern=r'\.(\d{8})-', date_format='%Y%m%d',
-                         use_year_subdirs=True, file_glob='*.nc*'):
+                         use_year_subdirs=True, file_glob='*.nc*',
+                         time_subset=None):
     r"""
     Main function to process gridded data to HEALPix Zarr with optimized processing pipeline.
     
@@ -263,6 +327,14 @@ def process_imerg_to_zarr(start_date, end_date, zoom, output_zarr, input_base_di
         If False, search directly in input_base_dir
     file_glob : str, optional
         Glob pattern for file matching (default: '*.nc*')
+    time_subset : str, optional
+        Subset time steps to reduce output size (useful when data at different 
+        time resolutions have identical values). Options:
+        - None (default): Keep all time steps
+        - '00min': Keep only time steps at 00 minutes (e.g., 00:00, 01:00, 02:00)
+        - '30min': Keep only time steps at 30 minutes (e.g., 00:30, 01:30, 02:30)
+        This reduces output by ~50% when hourly-averaged data is stored at 30-min intervals.
+        Note: Uses minute values, so 00:01 or 00:29 will match '00min' if close enough.
     
     Returns:
     --------
@@ -291,6 +363,21 @@ def process_imerg_to_zarr(start_date, end_date, zoom, output_zarr, input_base_di
         date_format='%Y%m%d%H',
         use_year_subdirs=False,
         file_glob='*.nc'
+    )
+    
+    # IR_IMERG with time subset (reduce output by 50%)
+    # Useful when precipitation is hourly-averaged but stored at 30-min intervals
+    process_imerg_to_zarr(
+        start_date=datetime(2020, 1, 1),
+        end_date=datetime(2020, 12, 31),
+        zoom=9,
+        output_zarr="/path/to/output_00min.zarr",
+        input_base_dir="/data/ir_imerg",
+        date_pattern=r'_(\d{10})_',
+        date_format='%Y%m%d%H',
+        use_year_subdirs=True,
+        file_glob='merg_*.nc',
+        time_subset='00min'  # Keep only times at 00, 01, 02, ... hours
     )
     
     Note:
@@ -333,6 +420,14 @@ def process_imerg_to_zarr(start_date, end_date, zoom, output_zarr, input_base_di
         ds = read_imerg_files(files, time_chunk_size)
         step_time = time.time() - step_start
         logger.info(f"✅ Step 1 completed in {step_time/60:.1f} minutes")
+        
+        # Apply time subsetting if requested (before temporal averaging)
+        if time_subset is not None:
+            logger.info("🔄 Step 1b: Applying time subset...")
+            step_start = time.time()
+            ds = subset_time_by_minute(ds, time_subset)
+            step_time = time.time() - step_start
+            logger.info(f"✅ Step 1b completed in {step_time:.1f} seconds")
         
         # Apply temporal averaging if requested
         logger.info("🔄 Step 2: Applying temporal averaging...")
