@@ -23,6 +23,10 @@ Configuration:
 import sys
 import yaml
 from pathlib import Path
+
+# Add parent directory to path to import modules
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from remap_imerg_to_zarr import process_imerg_to_zarr
 from src.utilities import parse_date
 
@@ -48,7 +52,10 @@ def main():
     # Parse command line arguments
     start_date = parse_date(sys.argv[1], is_end_date=False)
     end_date = parse_date(sys.argv[2], is_end_date=True)
-    config_path = "/global/homes/f/feng045/program/hackathon/remap_imerg/config/tb_imerg_config.yaml"
+    
+    # Get config path relative to script location
+    script_dir = Path(__file__).parent
+    config_path = script_dir.parent / "config" / "tb_imerg_config.yaml"
     
     # Parse zoom level (optional)
     zoom = None
@@ -65,7 +72,7 @@ def main():
                 print(f"Warning: Ignoring unknown argument: {arg}")
     
     # Load configuration
-    config = load_config(config_path=config_path)
+    config = load_config(config_path=str(config_path))
     
     # Create output directory if it doesn't exist
     output_dir = Path(config['output_base_dir'])

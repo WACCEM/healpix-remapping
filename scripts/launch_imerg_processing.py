@@ -1,38 +1,58 @@
 #!/usr/bin/env python3
 """
 Simple launcher script for IMERG to HEALPix processing
-Usage: python launch_imerg_processing.py <start_date> <end_date> [zoom_level]
-Example: python launch_imerg_processing.py 2020-01-01 2020-12-31 9
+
+This script processes IMERG data files with flexible file pattern matching.
+It reads configuration from imerg_config.yaml including file search patterns.
+
+Usage: 
+    python launch_imerg_processing.py <start_date> <end_date> [zoom_level] [--overwrite]
+Examples:
+    python launch_imerg_processing.py 2020-01-01 2020-12-31 9
+    python launch_imerg_processing.py 2020-01-01 2020-01-31 9 --overwrite
+
+Configuration:
+    Edit config/tb_imerg_config.yaml to configure:
+    - Input/output paths
+    - File search patterns (date_pattern, date_format, use_year_subdirs, file_glob)
+    - Processing parameters (zoom level, time averaging, chunking)
+    - Dask cluster settings
 """
 
 import sys
 import yaml
 from pathlib import Path
-from datetime import datetime
+
+# Add parent directory to path to import modules
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from remap_imerg_to_zarr import process_imerg_to_zarr
+from src.utilities import parse_date
 
 def load_config(config_path="imerg_config.yaml"):
     """Load configuration from YAML file"""
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
-def parse_date(date_str):
-    """Parse date string in YYYY-MM-DD format"""
-    try:
-        return datetime.strptime(date_str, "%Y-%m-%d")
-    except ValueError:
-        raise ValueError(f"Invalid date format: {date_str}. Use YYYY-MM-DD")
-
 def main():
     if len(sys.argv) < 3:
         print("Usage: python launch_imerg_processing.py <start_date> <end_date> [zoom_level] [--overwrite]")
-        print("Example: python launch_imerg_processing.py 2020-01-01 2020-12-31 9")
-        print("Example: python launch_imerg_processing.py 2020-01-01 2020-12-31 9 --overwrite")
+        print("\nDate formats:")
+        print("  YYYY-MM-DD       - Date only (end_date extends to 23:59:59)")
+        print("  YYYY-MM-DDTHH    - Date with hour (end_date extends to HH:59:59)")
+        print("\nExamples:")
+        print("  python launch_imerg_processing.py 2020-01-01 2020-12-31 9")
+        print("  python launch_imerg_processing.py 2020-01-01T00 2020-12-31T23 9")
+        print("  python launch_imerg_processing.py 2020-01-01 2020-12-31 9 --overwrite")
         sys.exit(1)
     
-    # Parse command line arguments
-    start_date = parse_date(sys.argv[1])
-    end_date = parse_date(sys.argv[2])
+    # Parse command line arguments with end-of-day extension
+    start_date = parse_date(sys.argv[1], is_end_date=False)
+    end_date = parse_date(sys.argv[2], is_end_date=True)
+    
+    # Get config path relative to script location
+    script_dir = Path(__file__).parent
+    config_path = script_dir.parent / "config" / "imerg_config.yaml"
     
     # Parse zoom level (optional)
     zoom = None
@@ -49,7 +69,7 @@ def main():
                 print(f"Warning: Ignoring unknown argument: {arg}")
     
     # Load configuration
-    config = load_config()
+    config = load_config(config_path=str(config_path))
     
     # Create output directory if it doesn't exist
     output_dir = Path(config['output_base_dir'])
