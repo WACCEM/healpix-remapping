@@ -7,6 +7,14 @@ output_base_dir: "/pscratch/sd/w/wcmca1/GPM/healpix/"
 output_basename: "IMERG_V7"
 weights_dir: "/pscratch/sd/w/wcmca1/GPM/weights/"
 
+# File search pattern configuration
+# These parameters control how files are discovered and filtered by date
+# Filename format: 3B-HHR.MS.MRG.3IMERG.YYYYMMDD-SHHMMSS-EHHMMSS.mmmm.V07B.HDF5.nc4
+date_pattern: "\\.(\\d{8})-"    # Regex to extract YYYYMMDD (8 digits between dot and hyphen)
+date_format: "%Y%m%d"           # strptime format: YYYY=year, MM=month, DD=day
+use_year_subdirs: true          # Files organized in yearly subdirectories (YYYY/)
+file_glob: "3B-HHR.MS.MRG.3IMERG.*.nc4"  # Glob pattern to match IMERG files
+
 # Processing parameters  
 default_zoom: 9
 time_chunk_size: 24  # 1 day worth of 1-hour data (balance memory vs parallelism)
