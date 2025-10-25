@@ -23,40 +23,16 @@ convert_time: True   # Convert cftime.DatetimeJulian to standard datetime64 for 
 # Note: spatial_chunk_size is automatically computed based on zoom level using chunk_tools.compute_chunksize()
 force_recompute: False    # Force recompute weight file even if it exists
 
-# Dask configuration optimized for NERSC Perlmutter
-# Hardware: 2x AMD EPYC 7763 (128 cores total), 512 GB RAM, 4 NUMA domains per socket
+# Dask configuration - SIMPLIFIED for I/O-intensive zarr writes
+# Hardware: 2x AMD EPYC 7763 (128 cores total), 512 GB RAM
+# Strategy: More workers with single thread optimal for I/O operations
 dask:
-  n_workers: 16              # Use 16 workers to respect NUMA topology (4 per socket, 2 per NUMA domain)
-  threads_per_worker: 8      # 8 threads per worker = 128 total threads (matches core count)
-  memory_limit: "30GB"       # Conservative: 30GB per worker × 16 workers = 480GB (leaves 32GB for OS)
+  n_workers: 16              # More workers = better parallel I/O throughput
+  threads_per_worker: 1      # Single thread avoids GIL contention during I/O
+  # memory_limit: auto        # Auto-calculated: 80% of 512GB / 16 workers ≈ 25GB per worker
   
-  # Advanced Perlmutter optimizations (OPTIONAL - comment out if not running on NERSC)
-  # These settings are tuned for Perlmutter hardware and high-throughput processing
-  # The code will run fine with just the basic dask settings above
-  scheduler_options:
-    idle_timeout: "1800s"    # Keep cluster alive for 30 min after tasks complete
-    work_stealing: true      # Enable work stealing for load balancing
-    
-  worker_options:
-    nthreads: 8              # Threads per worker (same as threads_per_worker)
-    memory_limit: "30GB"     # Memory per worker
-    memory_target_fraction: 0.8    # Start spilling to disk at 80% memory usage
-    memory_spill_fraction: 0.9     # Spill aggressively at 90%
-    death_timeout: "300s"    # Allow 5 min for worker to report death before assuming it's dead
-    
-  # Connection settings for high-throughput and long-running operations
-  communication:
-    tcp:
-      tcp_timeout: 120s             # Increased from 30s for large writes
-      tcp_user_timeout: 120s        # Increased from 30s
-    timeouts:
-      connect: 120s                 # Time to establish connection
-      tcp: 120s                     # TCP operation timeout
-  
-  # Client settings for cleanup operations
-  client_options:
-    timeout: "300s"          # Client operations timeout (including cleanup) - increased from 60s default
-    heartbeat_interval: "5s" # How often client checks cluster health
+  # Note: memory_limit commented out to use auto-calculation from system memory
+  # This prevents worker pausing at 80% that causes zarr write deadlocks
   
 # Compression settings for Zarr
 compression:
