@@ -387,9 +387,9 @@ def process_imerg_to_zarr(start_date, end_date, zoom, output_zarr, input_base_di
     # Setup Dask client with configuration from config file or defaults
     if dask_config:
         client = utilities.setup_dask_client(
-            n_workers=dask_config.get('n_workers', 16),
-            threads_per_worker=dask_config.get('threads_per_worker', 8),
-            memory_limit=dask_config.get('memory_limit', '30GB'),
+            n_workers=dask_config.get('n_workers'),
+            threads_per_worker=dask_config.get('threads_per_worker'),
+            memory_limit=dask_config.get('memory_limit'),
             advanced_config=dask_config.get('worker_options', {})
         )
     else:
