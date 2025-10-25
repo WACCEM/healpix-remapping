@@ -1,20 +1,32 @@
 #!/usr/bin/env python3
 """
-Coarsen HEALPix IMERG data to lower zoom levels.
+Coarsen HEALPix data to lower zoom levels.
 
-This script takes processed HEALPix IMERG data at a high zoom level and 
+This script takes processed HEALPix data at a high zoom level and 
 progressively coarsens it to all lower zoom levels (down to zoom 0).
 Each coarsening step reduces the resolution by a factor of 4 (2^2).
 
+Works with any HEALPix Zarr dataset.
+
 Usage:
-    python coarsen_healpix.py <input_zarr_file> [--target_zoom] [--overwrite]
+    python coarsen_healpix.py INPUT_ZARR [options]
     
-Example:
+Examples:
+    # Coarsen from zoom 9 down to zoom 5, output to same directory as input
     python coarsen_healpix.py IMERG_V7_1H_zoom9_20200101_20200131.zarr --target_zoom 5
-    python coarsen_healpix.py IMERG_V7_1H_zoom9_20200101_20200131.zarr --overwrite
+    
+    # Coarsen to zoom 0, specify output directory
+    python coarsen_healpix.py data.zarr --output_dir /path/to/output
+    
+    # Apply temporal coarsening (1H -> 6H) and spatial coarsening
+    python coarsen_healpix.py data.zarr --temporal_factor 6 --target_zoom 7
+    
+    # Use custom compression settings from config file
+    python coarsen_healpix.py data.zarr --config my_config.yaml
 """
 
 import sys
+import argparse
 import yaml
 import xarray as xr
 import zarr
@@ -25,19 +37,50 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 import logging
-import chunk_tools
+
+# Add parent directory to path to import modules
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src import chunk_tools
 
 # Configure logging (will be set up in main function)
 logger = None
 
 
-def load_config(config_path="imerg_config.yaml"):
-    """Load configuration from YAML file"""
+def load_config(config_path):
+    """
+    Load configuration from YAML file.
+    
+    Parameters:
+    -----------
+    config_path : str or Path
+        Path to configuration YAML file
+        
+    Returns:
+    --------
+    dict : Configuration dictionary
+    """
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
 
-def get_encoding(dataset, config):
+def get_default_compression_config():
+    """
+    Get default compression configuration.
+    
+    Returns:
+    --------
+    dict : Default compression settings
+    """
+    return {
+        'compressor': 'zstd',
+        'compressor_level': 3,
+        'dtype': 'float32'
+    }
+
+
+def get_encoding(dataset, compression_config=None):
+
     """
     Get optimized encoding for Zarr output based on configuration.
     
@@ -45,14 +88,19 @@ def get_encoding(dataset, config):
     -----------
     dataset : xr.Dataset
         Dataset to encode
-    config : dict
-        Configuration dictionary with compression settings
+    compression_config : dict, optional
+        Compression configuration dictionary with keys:
+        - compressor: Compression algorithm (default: 'zstd')
+        - compressor_level: Compression level (default: 3)
+        - dtype: Data type for floating point variables (default: 'float32')
+        If None, uses default compression settings.
         
     Returns:
     --------
     dict : Encoding dictionary for to_zarr()
     """
-    compression_config = config.get('compression', {})
+    if compression_config is None:
+        compression_config = get_default_compression_config()
     
     encoding = {}
     
@@ -141,24 +189,29 @@ def extract_info_from_filename(filename):
     }
 
 
-def coarsen_healpix_data(input_zarr, config, target_zoom=0, temporal_factor=1, overwrite=False):
+def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_factor=1, 
+                         time_chunk_size=24, compression_config=None, overwrite=False):
     """
     Coarsen HEALPix data from high zoom level to progressively lower levels.
     Optionally performs temporal coarsening (averaging) as well.
     
     Parameters:
     -----------
-    input_zarr : str
+    input_zarr : str or Path
         Path to input Zarr file (highest zoom level)
-    config : dict
-        Configuration dictionary
+    output_dir : str or Path, optional
+        Output directory for coarsened files. If None, uses same directory as input.
     target_zoom : int
         Target zoom level to coarsen down to (default: 0)
     temporal_factor : int
         Temporal coarsening factor (default: 1, no temporal coarsening)
         e.g., 3 for 1H->3H, 6 for 1H->6H, 24 for 1H->1D
+    time_chunk_size : int
+        Chunk size for time dimension (default: 24)
+    compression_config : dict, optional
+        Compression configuration. If None, uses default settings.
     overwrite : bool
-        Whether to overwrite existing files
+        Whether to overwrite existing files (default: False)
     """
     
     # Extract information from input filename
@@ -231,9 +284,15 @@ def coarsen_healpix_data(input_zarr, config, target_zoom=0, temporal_factor=1, o
                 file_info['time_resolution'] = f"{new_days}D"
             logger.info(f"   Updated time resolution: {original_res} -> {file_info['time_resolution']}")
     
-    # Get output directory from config
-    output_dir = Path(config['output_base_dir'])
+    # Determine output directory
+    if output_dir is None:
+        # Use same directory as input
+        output_dir = input_path.parent
+    else:
+        output_dir = Path(output_dir)
+    
     output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Output directory: {output_dir}")
     
     # Start coarsening loop
     current_ds = ds
@@ -285,8 +344,7 @@ def coarsen_healpix_data(input_zarr, config, target_zoom=0, temporal_factor=1, o
             'source_file': str(input_path.name)
         })
         
-        # Prepare chunking (keep time chunking from config, chunk spatial data efficiently)
-        time_chunk_size = config.get('time_chunk_size', 24)
+        # Prepare chunking (use provided time chunk size, compute spatial chunks efficiently)
         spatial_chunk_size = chunk_tools.compute_chunksize(zoom_level)
         
         chunked_ds = coarsened_ds.chunk({
@@ -298,7 +356,7 @@ def coarsen_healpix_data(input_zarr, config, target_zoom=0, temporal_factor=1, o
         logger.info(f"   Writing to: {output_path}")
         store = zarr.storage.DirectoryStore(str(output_path), dimension_separator="/")
         
-        encoding = get_encoding(chunked_ds, config)
+        encoding = get_encoding(chunked_ds, compression_config)
         chunked_ds.to_zarr(store, encoding=encoding, consolidated=True)
         
         logger.info(f"✅ Successfully wrote zoom {zoom_level}: {output_path}")
@@ -320,10 +378,60 @@ def coarsen_healpix_data(input_zarr, config, target_zoom=0, temporal_factor=1, o
     logger.info("🎉 Coarsening completed successfully!")
 
 
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description='Coarsen HEALPix data to lower zoom levels.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+    Examples:
+    # Coarsen from zoom 9 down to zoom 5
+    %(prog)s IMERG_V7_1H_zoom9_20200101_20200131.zarr --target_zoom 5
+    
+    # Coarsen to zoom 0, specify output directory
+    %(prog)s /path/to/data.zarr --output_dir /path/to/output
+    
+    # Apply temporal coarsening (1H -> 6H) and spatial coarsening
+    %(prog)s data.zarr --temporal_factor 6 --target_zoom 7
+    
+    # Use custom compression settings from config file
+    %(prog)s data.zarr --config my_config.yaml --overwrite
+            """
+    )
+    
+    # Required arguments
+    parser.add_argument('input_zarr',
+                        help='Path to input HEALPix Zarr file (highest zoom level)')
+    
+    # Optional arguments
+    parser.add_argument('--output_dir', '-o',
+                        help='Output directory for coarsened files. If not specified, '
+                             'uses same directory as input file.')
+    
+    parser.add_argument('--target_zoom', '-z', type=int, default=0,
+                        help='Target zoom level to coarsen down to (default: 0)')
+    
+    parser.add_argument('--temporal_factor', '-t', type=int, default=1,
+                        help='Temporal coarsening factor (default: 1, no temporal coarsening). '
+                             'E.g., 3 for 1H->3H, 6 for 1H->6H, 24 for 1H->1D')
+    
+    parser.add_argument('--time_chunk_size', type=int, default=24,
+                        help='Chunk size for time dimension in output (default: 24)')
+    
+    parser.add_argument('--config', '-c',
+                        help='Path to YAML configuration file for compression settings. '
+                             'If not provided, uses default compression (zstd, level 3)')
+    
+    parser.add_argument('--overwrite', action='store_true',
+                        help='Overwrite existing output files')
+    
+    return parser.parse_args()
+
+
 def main():
     """Main function to handle command line arguments and run coarsening."""
     
-    # Set up logging inside main function
+    # Set up logging
     global logger
     logging.basicConfig(
         level=logging.INFO, 
@@ -332,69 +440,55 @@ def main():
     )
     logger = logging.getLogger()
     
-    if len(sys.argv) < 2:
-        print("Usage: python coarsen_healpix.py <input_zarr_file> [--target_zoom N] [--temporal_factor N] [--overwrite]")
-        print("Example: python coarsen_healpix.py IMERG_V7_1H_zoom9_20200101_20200131.zarr --target_zoom 5")
-        print("Example: python coarsen_healpix.py IMERG_V7_1H_zoom9_20200101_20200131.zarr --temporal_factor 3")
-        print("Example: python coarsen_healpix.py IMERG_V7_1H_zoom9_20200101_20200131.zarr --target_zoom 5 --temporal_factor 6 --overwrite")
-        sys.exit(1)
+    # Parse arguments
+    args = parse_arguments()
     
-    input_file = sys.argv[1]
-    target_zoom = 0
-    temporal_factor = 1
-    overwrite = False
-    
-    # Parse optional arguments
-    i = 2
-    while i < len(sys.argv):
-        if sys.argv[i] == '--target_zoom' and i + 1 < len(sys.argv):
-            target_zoom = int(sys.argv[i + 1])
-            i += 2
-        elif sys.argv[i] == '--temporal_factor' and i + 1 < len(sys.argv):
-            temporal_factor = int(sys.argv[i + 1])
-            i += 2
-        elif sys.argv[i] == '--overwrite':
-            overwrite = True
-            i += 1
-        else:
-            print(f"Unknown argument: {sys.argv[i]}")
+    # Load configuration if provided
+    compression_config = None
+    if args.config:
+        try:
+            config = load_config(args.config)
+            compression_config = config.get('compression', None)
+            logger.info(f"Configuration loaded from: {args.config}")
+        except FileNotFoundError:
+            logger.error(f"Configuration file not found: {args.config}")
             sys.exit(1)
-    
-    # Load configuration
-    try:
-        config = load_config()
-        logger.info("Configuration loaded successfully")
-    except FileNotFoundError:
-        logger.error("Configuration file 'imerg_config.yaml' not found")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Error loading configuration: {e}")
-        sys.exit(1)
+        except Exception as e:
+            logger.error(f"Error loading configuration: {e}")
+            sys.exit(1)
+    else:
+        logger.info("Using default compression settings (no config file provided)")
     
     # Validate input file path
-    input_path = Path(input_file)
+    input_path = Path(args.input_zarr)
     if not input_path.is_absolute():
-        # If relative path, look in output_base_dir
-        input_path = Path(config['output_base_dir']) / input_file
+        # If relative path, resolve from current directory
+        input_path = Path.cwd() / args.input_zarr
     
     if not input_path.exists():
         logger.error(f"Input file not found: {input_path}")
         sys.exit(1)
     
     logger.info(f"Input file: {input_path}")
-    logger.info(f"Target zoom level: {target_zoom}")
-    logger.info(f"Temporal coarsening factor: {temporal_factor}")
-    logger.info(f"Overwrite existing files: {overwrite}")
-    logger.info(f"Output directory: {config['output_base_dir']}")
+    logger.info(f"Target zoom level: {args.target_zoom}")
+    logger.info(f"Temporal coarsening factor: {args.temporal_factor}")
+    logger.info(f"Time chunk size: {args.time_chunk_size}")
+    logger.info(f"Overwrite existing files: {args.overwrite}")
+    if args.output_dir:
+        logger.info(f"Output directory: {args.output_dir}")
+    else:
+        logger.info(f"Output directory: same as input ({input_path.parent})")
     
     try:
         # Run the coarsening process
         coarsen_healpix_data(
             input_zarr=str(input_path),
-            config=config,
-            target_zoom=target_zoom,
-            temporal_factor=temporal_factor,
-            overwrite=overwrite
+            output_dir=args.output_dir,
+            target_zoom=args.target_zoom,
+            temporal_factor=args.temporal_factor,
+            time_chunk_size=args.time_chunk_size,
+            compression_config=compression_config,
+            overwrite=args.overwrite
         )
         
         logger.info("All processing completed successfully!")
