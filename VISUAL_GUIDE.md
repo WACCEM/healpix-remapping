@@ -88,11 +88,11 @@ Full filename:  merg_2020123108_10km-pixel.nc
 ```
   Captured string: "2020123108"
   Format string:   "%Y%m%d%H"
-                    ││ ││ ││└─ %H = Hour (00-23)
-                    ││ ││ │└── %d = Day (01-31)
-                    ││ ││ └─── %m = Month (01-12)
-                    ││ │└───── %Y = Year (4 digits)
-                    └┴─┴───── Each % code consumes characters
+                    ││ │ │ └─ %H = Hour (00-23)
+                    ││ │ └─── %d = Day (01-31)
+                    ││ └───── %m = Month (01-12)
+                    │└─────── %Y = Year (4 digits)
+                    └──────── Each % code consumes characters
   
   Parsing:
   "2020123108"
