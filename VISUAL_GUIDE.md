@@ -4,64 +4,64 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Your Data Files                              │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  merg_2020123108_10km-pixel.nc                           │  │
-│  │  merg_2020123109_10km-pixel.nc                           │  │
-│  │  merg_2020123110_10km-pixel.nc                           │  │
-│  └──────────────────────────────────────────────────────────┘  │
+│                     Your Data Files                             │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  merg_2020123108_10km-pixel.nc                           │   │
+│  │  merg_2020123109_10km-pixel.nc                           │   │
+│  │  merg_2020123110_10km-pixel.nc                           │   │
+│  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│              Step 1: File Discovery (glob)                       │
-│                                                                  │
+│              Step 1: File Discovery (glob)                      │
+│                                                                 │
 │  file_glob = 'merg_*.nc'                                        │
 │  use_year_subdirs = False                                       │
-│                                                                  │
+│                                                                 │
 │  Finds: All files matching pattern in base_dir/                 │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│         Step 2: Extract Date String (regex)                      │
-│                                                                  │
+│         Step 2: Extract Date String (regex)                     │
+│                                                                 │
 │  Filename:    merg_2020123108_10km-pixel.nc                     │
-│               ─────┬──────────                                   │
-│  Pattern:     r'_(\d{10})_'    (capture 10 digits)             │
-│               ─────┬──────────                                   │
+│               ─────┬──────────                                  │
+│  Pattern:     r'_(\d{10})_'    (capture 10 digits)              │
+│               ─────┬──────────                                  │
 │  Extracted:   "2020123108"     ← captured group                 │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│         Step 3: Parse Date String (strptime)                     │
-│                                                                  │
+│         Step 3: Parse Date String (strptime)                    │
+│                                                                 │
 │  String:      "2020123108"                                      │
 │  Format:      '%Y%m%d%H'                                        │
-│               ─────┬──────                                       │
-│  Mapping:     Year │Month│Day│Hour                             │
+│               ─────┬──────                                      │
+│  Mapping:     Year │Month│Day│Hour                              │
 │               2020 │12  │31│08                                  │
-│               ─────┴────┴──┴──                                   │
+│               ─────┴────┴──┴──                                  │
 │  Result:      datetime(2020, 12, 31, 8)                         │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│            Step 4: Filter by Date Range                          │
-│                                                                  │
-│  start_date = datetime(2020, 12, 31, 8)   ✓ Include            │
+│            Step 4: Filter by Date Range                         │
+│                                                                 │
+│  start_date = datetime(2020, 12, 31, 8)   ✓ Include             │
 │  file_date  = datetime(2020, 12, 31, 8)   ← File date           │
-│  end_date   = datetime(2020, 12, 31, 18)  ✓ Include            │
-│                                                                  │
+│  end_date   = datetime(2020, 12, 31, 18)  ✓ Include             │
+│                                                                 │
 │  Keep file: YES (within range)                                  │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│                   Filtered File List                             │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  merg_2020123108_10km-pixel.nc  ✓                        │  │
-│  │  merg_2020123109_10km-pixel.nc  ✓                        │  │
-│  │  merg_2020123110_10km-pixel.nc  ✓                        │  │
-│  │  ...                                                      │  │
-│  │  merg_2020123118_10km-pixel.nc  ✓                        │  │
-│  └──────────────────────────────────────────────────────────┘  │
+│                   Filtered File List                            │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  merg_2020123108_10km-pixel.nc  ✓                        │   │
+│  │  merg_2020123109_10km-pixel.nc  ✓                        │   │
+│  │  merg_2020123110_10km-pixel.nc  ✓                        │   │
+│  │  ...                                                     │   │
+│  │  merg_2020123118_10km-pixel.nc  ✓                        │   │
+│  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -140,18 +140,18 @@ Result:    datetime(2020, 1, 1)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Test Your Pattern                             │
-│                                                                  │
+│                    Test Your Pattern                            │
+│                                                                 │
 │  1. Create sample filename:                                     │
 │     filename = "merg_2020123108_10km-pixel.nc"                  │
-│                                                                  │
+│                                                                 │
 │  2. Define pattern:                                             │
 │     pattern = r'_(\d{10})_'                                     │
 │     format = '%Y%m%d%H'                                         │
-│                                                                  │
+│                                                                 │
 │  3. Test with test_file_pattern.py:                             │
 │     $ python test_file_pattern.py                               │
-│                                                                  │
+│                                                                 │
 │     ✓ Pattern matched!                                          │
 │       Extracted string: '2020123108'                            │
 │     ✓ Date parsed successfully!                                 │
@@ -222,7 +222,7 @@ Behavior: Scans /data/ directly
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Configuration                                                   │
+│  Configuration                                                  │
 ├─────────────────────────────────────────────────────────────────┤
 │  input_base_dir:  "/data/ir_imerg"                              │
 │  date_pattern:    r'_(\d{10})_'                                 │
@@ -234,30 +234,30 @@ Behavior: Scans /data/ directly
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  File Discovery                                                  │
+│  File Discovery                                                 │
 ├─────────────────────────────────────────────────────────────────┤
 │  Glob: /data/ir_imerg/merg_*.nc                                 │
 │  Found: 100 files                                               │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  Date Extraction & Filtering                                     │
+│  Date Extraction & Filtering                                    │
 ├─────────────────────────────────────────────────────────────────┤
-│  Processing each file...                                         │
-│    merg_2020123108_10km-pixel.nc → 2020-12-31 08:00 ✓ Include  │
-│    merg_2020123109_10km-pixel.nc → 2020-12-31 09:00 ✓ Include  │
-│    ...                                                           │
-│    merg_2020123118_10km-pixel.nc → 2020-12-31 18:00 ✓ Include  │
-│    merg_2020123119_10km-pixel.nc → 2020-12-31 19:00 ✗ Exclude  │
-│                                                                  │
-│  Result: 11 files in date range                                  │
+│  Processing each file...                                        │
+│    merg_2020123108_10km-pixel.nc → 2020-12-31 08:00 ✓ Include   │
+│    merg_2020123109_10km-pixel.nc → 2020-12-31 09:00 ✓ Include   │
+│    ...                                                          │
+│    merg_2020123118_10km-pixel.nc → 2020-12-31 18:00 ✓ Include   │
+│    merg_2020123119_10km-pixel.nc → 2020-12-31 19:00 ✗ Exclude   │
+│                                                                 │
+│  Result: 11 files in date range                                 │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  Processing Pipeline                                             │
+│  Processing Pipeline                                            │
 ├─────────────────────────────────────────────────────────────────┤
 │  1. Read files → xarray Dataset                                 │
-│  2. Temporal average (if configured)                             │
+│  2. Temporal average (if configured)                            │
 │  3. Remap to HEALPix                                            │
 │  4. Write to Zarr                                               │
 └─────────────────────────────────────────────────────────────────┘
