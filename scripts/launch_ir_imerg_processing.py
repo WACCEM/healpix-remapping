@@ -155,6 +155,11 @@ def main():
     else:
         print(f"\n📐 Spatial dimensions: Will auto-detect from data files")
     
+    # Get time dimension name from config (optional - defaults to 'time')
+    concat_dim = config.get('concat_dim', 'time')
+    if concat_dim != 'time':
+        print(f"\n⏱️  Time dimension name (from config): '{concat_dim}'")
+    
     # Prepare preprocessing function and kwargs for new flexible approach
     preprocessing_func = None
     preprocessing_kwargs = None
@@ -173,6 +178,7 @@ def main():
         time_chunk_size=config['time_chunk_size'],
         input_base_dir=config['input_base_dir'],
         spatial_chunks=spatial_dimensions,  # Pass from config or None for auto-detection
+        concat_dim=concat_dim,  # Pass time dimension name from config
         overwrite=overwrite,
         time_average=time_average,
         convert_time=config.get('convert_time', False),

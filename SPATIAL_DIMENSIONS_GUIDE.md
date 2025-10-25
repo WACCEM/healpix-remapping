@@ -1,14 +1,39 @@
 # Spatial Dimensions Configuration Guide
 
-This guide explains how spatial dimension names are handled in the HEALPix remapping pipeline.
+This guide explains how spatial dimension names are handled in the HEALPix remapping pipeline, along with time dimension naming.
 
 ## Overview
 
-Different datasets use different names for their spatial coordinate dimensions. The pipeline uses a **hybrid approach** to handle this gracefully:
+Different datasets use different names for their spatial coordinate dimensions and time dimensions. The pipeline uses a **hybrid approach** to handle this gracefully:
 
 1. **Auto-detection** (default): Automatically detect dimension names from the first data file
 2. **Config override**: Explicitly specify dimension names in your config file
-3. **Fallback**: Use `{'lat': -1, 'lon': -1}` if detection fails
+3. **Fallback**: Use sensible defaults if detection fails
+
+## Time Dimension Names
+
+The pipeline also handles different time dimension names across datasets:
+
+### Common Time Dimension Names
+
+| Dataset | Time Dimension | Config Example |
+|---------|---------------|----------------|
+| **IMERG/IR_IMERG** | `time` | `concat_dim: "time"` (default) |
+| **ERA5** | `time` | `concat_dim: "time"` (default) |
+| **WRF** | `Times` | `concat_dim: "Times"` |
+| **CESM/CAM** | `time` | `concat_dim: "time"` (default) |
+| **Some CMIP6** | `time_counter` | `concat_dim: "time_counter"` |
+
+### Configuring Time Dimension
+
+**In config file** (`config/tb_imerg_config.yaml`):
+```yaml
+# Time dimension configuration (OPTIONAL)
+# Only specify if your dataset uses a different name (default: 'time')
+concat_dim: "Time"  # For WRF data
+```
+
+**Why this matters**: The auto-detection algorithm needs to know which dimension is time so it can correctly identify spatial dimensions (everything except time).
 
 ## Why This Matters
 
@@ -200,13 +225,17 @@ Auto-detects: `{'ncol': -1}` ✅
 input_base_dir: "/data/WRF"
 default_zoom: 9
 
+# WRF uses 'Time' or 'Times' instead of 'time'
+concat_dim: "Times"
+
 # Explicit config recommended for WRF
 spatial_dimensions:
   south_north: -1
   west_east: -1
 ```
 
-Explicit: `{'south_north': -1, 'west_east': -1}` ✅
+Explicit: `{'south_north': -1, 'west_east': -1}` ✅  
+Time dimension: `'Times'` ✅
 
 ## Troubleshooting
 

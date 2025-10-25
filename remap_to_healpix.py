@@ -115,7 +115,7 @@ warnings.filterwarnings('ignore', category=UserWarning)
 
 def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr, input_base_dir,
                            weights_file=None, time_chunk_size=48,
-                           spatial_chunks=None,
+                           spatial_chunks=None, concat_dim='time',
                            force_recompute=False, overwrite=False,
                            time_average=None, convert_time=False, dask_config=None,
                            date_pattern=r'\.(\d{8})-', date_format='%Y%m%d',
@@ -161,6 +161,13 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr, input_base_
             {'lat': 100, 'lon': 100}  # Chunked spatial (for very large grids)
             {'latitude': -1, 'longitude': -1}  # ERA5 explicit
             {'ncol': -1}  # Unstructured grid explicit
+    concat_dim : str, optional
+        Name of the time/concatenation dimension (default: 'time')
+        Different datasets use different names:
+            - Most datasets: 'time'
+            - WRF: 'Time' or 'Times'
+            - Some CMIP6 models: 'time_counter'
+        Auto-detection will exclude this dimension when identifying spatial dimensions.
     force_recompute : bool, default=False
         If True, recompute weights even if weights_file exists
     overwrite : bool, default=False
@@ -306,7 +313,7 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr, input_base_
     # Priority: explicit config > auto-detection > default fallback
     if spatial_chunks is None:
         logger.info("🔍 Spatial dimensions not specified - auto-detecting from first file...")
-        spatial_chunks = utilities.detect_spatial_dimensions(files)
+        spatial_chunks = utilities.detect_spatial_dimensions(files, time_dim=concat_dim)
     else:
         logger.info(f"✅ Using explicitly provided spatial dimensions: {spatial_chunks}")
     
@@ -335,7 +342,8 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr, input_base_
         ds = utilities.read_concat_files(
             files, 
             time_chunk_size=time_chunk_size,
-            spatial_dims=spatial_chunks
+            spatial_dims=spatial_chunks,
+            concat_dim=concat_dim
         )
         step_time = time.time() - step_start
         logger.info(f"✅ Step 1 completed in {step_time/60:.1f} minutes")

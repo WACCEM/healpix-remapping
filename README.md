@@ -58,7 +58,7 @@ output_basename: "MyDataset_V1"
 weights_dir: "/path/to/weights/"  # Weights are cached and reused
 ```
 
-**b) File Pattern Matching (CRITICAL for non-IMERG datasets):**
+**b) File Pattern Matching:**
 ```yaml
 # Example for IMERG files: 3B-HHR.MS.MRG.3IMERG.20211231-S170000-E172959.1020.V07B.HDF5.nc4
 date_pattern: "\\.(\\d{8})-"              # Regex to extract date (use \\d for digits)
@@ -94,6 +94,16 @@ convert_time: True            # Convert cftime to datetime64 for pandas
 # Note: Auto-detection examines the first data file and identifies coordinate
 # dimensions automatically. Only use explicit config if auto-detection fails
 # or you need to override for a specific reason.
+
+# Time dimension configuration (OPTIONAL - defaults to 'time')
+# concat_dim: "time"          # Name of time/concatenation dimension
+#
+# Common time dimension names:
+#   Most datasets: "time" (default)
+#   WRF: "Time" or "Times"
+#   Some CMIP6: "time_counter"
+#
+# Only specify if your dataset uses a different name than 'time'
 ```
 
 **d) Dask Configuration (Optimized for I/O-Intensive Operations):**
@@ -161,7 +171,7 @@ sbatch submit_imerg_job.sh 2020-01-01 2020-12-31 9
 python launch_imerg_processing.py 2020-01-01 2020-01-31 9 --overwrite
 ```
 
-## Project Structure (Reorganized!)
+## Project Structure
 
 ```
 remap_imerg/
@@ -193,12 +203,6 @@ remap_imerg/
 └── notebooks/                         # Jupyter notebooks for development
 ```
 
-**Key Changes from Original Structure:**
-- ✅ **config/** - Centralized YAML configurations (was in root)
-- ✅ **scripts/** - All execution scripts in one place (was in root)
-- ✅ **tests/** - Testing utilities organized together (was in root)
-- ✅ **src/** - Reusable library modules extracted from monolithic file
-- ✅ Main module reduced from 900+ lines to 391 lines through refactoring
 
 ## Configuring for Your Dataset
 
@@ -587,59 +591,6 @@ if match:
 - Use bare `Client()` without LocalCluster (loses memory control)
 - Add complex communication/scheduler settings (increases deadlock risk)
 
-## Generalized File Pattern Support (NEW!)
-
-The workflow has been extended to support **any gridded lat/lon NetCDF dataset**, not just IMERG. You can now process data with different filename conventions and directory structures.
-
-### New Parameters
-
-Configure file pattern matching with these parameters:
-
-- **`date_pattern`** - Regex to extract date from filename (e.g., `r'\.(\d{8})-'` for IMERG)
-- **`date_format`** - strptime format for parsing (e.g., `'%Y%m%d'`)
-- **`use_year_subdirs`** - Search yearly folders (default: `True`)
-- **`file_glob`** - File matching pattern (e.g., `'*.nc*'`)
-
-### Example: IR_IMERG Format
-
-For files like `merg_2020123108_10km-pixel.nc`:
-
-```python
-from datetime import datetime
-from remap_to_healpix import process_to_healpix_zarr
-from src.preprocessing import subset_time_by_minute
-
-# Flexible approach with optional preprocessing function calls
-process_to_healpix_zarr(
-    start_date=datetime(2020, 12, 31, 8),
-    end_date=datetime(2020, 12, 31, 18),
-    zoom=9,
-    output_zarr="/path/to/output.zarr",
-    input_base_dir="/data/ir_imerg",
-    
-    # IR_IMERG specific file pattern
-    date_pattern=r'_(\d{10})_',    # YYYYMMDDhh
-    date_format='%Y%m%d%H',
-    use_year_subdirs=True,         # Files in YYYY/ subdirectories
-    file_glob='merg_*.nc',
-    
-    # Optional: Time subsetting preprocessing (reduces output by 50%)
-    preprocessing_func=subset_time_by_minute,
-    preprocessing_kwargs={'time_subset': '00min'},
-    
-    convert_time=True,
-    overwrite=True
-)
-```
-
-### Supported Formats
-
-✅ **IMERG**: `3B-HHR.MS.MRG.3IMERG.20200101-S000000-E002959.0000.V07B.HDF5.nc4`  
-✅ **IR_IMERG**: `merg_2020123108_10km-pixel.nc`  
-✅ **Generic Daily**: `data_2020-01-01.nc`  
-✅ **Custom**: Configure your own pattern!  
-
-See `scripts/example_usage.py` for complete working examples.
 
 ## Further Development
 

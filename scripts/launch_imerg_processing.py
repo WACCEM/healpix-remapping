@@ -26,7 +26,7 @@ from pathlib import Path
 # Add parent directory to path to import modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from remap_imerg_to_zarr import process_imerg_to_zarr
+from remap_to_healpix import process_to_healpix_zarr
 from src.utilities import parse_date
 
 def load_config(config_path="imerg_config.yaml"):
@@ -107,8 +107,8 @@ def main():
     # Create weights file path (use pathlib to handle extra slashes)
     weights_file = str(Path(config['weights_dir']) / f"imerg_v07b_to_healpix_z{zoom}_weights.nc")
     
-    # Run the processing with correct parameters
-    process_imerg_to_zarr(
+    # Run the processing (using backward-compatible function name)
+    process_to_healpix_zarr(
         start_date=start_date,
         end_date=end_date,
         zoom=zoom,

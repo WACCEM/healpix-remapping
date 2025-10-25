@@ -34,6 +34,16 @@ convert_time: True   # Convert cftime.DatetimeJulian to standard datetime64 for 
 #   E3SM: {ncol: -1}
 #   CMIP6: {lat: -1, lon: -1} or {latitude: -1, longitude: -1} (varies by model)
 
+# Time dimension configuration (OPTIONAL)
+# Name of the time/concatenation dimension (default: 'time')
+# Only specify if your dataset uses a different name
+# concat_dim: "time"
+#
+# Examples for different datasets:
+#   Most datasets: "time" (default)
+#   WRF: "Time" or "Times"
+#   Some CMIP6: "time_counter"
+
 # Note: spatial_chunk_size is automatically computed based on zoom level using chunk_tools.compute_chunksize()
 force_recompute: False    # Force recompute weight file even if it exists
 
