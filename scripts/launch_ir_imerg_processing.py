@@ -6,11 +6,12 @@ This script processes IR+IMERG data files with flexible file pattern matching.
 It reads configuration from tb_imerg_config.yaml including file search patterns.
 
 Usage: 
-    python launch_ir_imerg_processing.py <start_date> <end_date> [zoom_level] [--overwrite]
+    python launch_ir_imerg_processing.py <start_date> <end_date> [zoom_level] [--overwrite] [--time-subset=00min|30min]
 
 Examples:
     python launch_ir_imerg_processing.py 2020-01-01 2020-12-31 9
     python launch_ir_imerg_processing.py 2020-01-01 2020-01-31 9 --overwrite
+    python launch_ir_imerg_processing.py 2020-01-01 2020-12-31 9 --time-subset=00min
 
 Configuration:
     Edit config/tb_imerg_config.yaml to configure:
@@ -27,8 +28,9 @@ from pathlib import Path
 # Add parent directory to path to import modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from remap_imerg_to_zarr import process_imerg_to_zarr
+from remap_to_healpix import process_to_healpix_zarr
 from src.utilities import parse_date
+from src.preprocessing import subset_time_by_minute
 
 def load_config(config_path="tb_imerg_config.yaml"):
     """Load configuration from YAML file"""
@@ -146,8 +148,23 @@ def main():
     if time_subset:
         print(f"\n⏰ Time subsetting: {time_subset} (output will be reduced by ~50%)")
     
-    # Run the processing with correct parameters
-    process_imerg_to_zarr(
+    # Get spatial dimensions from config (optional - will auto-detect if not specified)
+    spatial_dimensions = config.get('spatial_dimensions', None)
+    if spatial_dimensions:
+        print(f"\n📐 Spatial dimensions (from config): {spatial_dimensions}")
+    else:
+        print(f"\n📐 Spatial dimensions: Will auto-detect from data files")
+    
+    # Prepare preprocessing function and kwargs for new flexible approach
+    preprocessing_func = None
+    preprocessing_kwargs = None
+    if time_subset:
+        preprocessing_func = subset_time_by_minute
+        preprocessing_kwargs = {'time_subset': time_subset}
+        print(f"✨ Using flexible preprocessing: subset_time_by_minute with time_subset='{time_subset}'")
+    
+    # Run the processing with new flexible preprocessing approach
+    process_to_healpix_zarr(
         start_date=start_date,
         end_date=end_date,
         zoom=zoom,
@@ -155,6 +172,7 @@ def main():
         weights_file=weights_file,
         time_chunk_size=config['time_chunk_size'],
         input_base_dir=config['input_base_dir'],
+        spatial_chunks=spatial_dimensions,  # Pass from config or None for auto-detection
         overwrite=overwrite,
         time_average=time_average,
         convert_time=config.get('convert_time', False),
@@ -165,8 +183,9 @@ def main():
         date_format=date_format,
         use_year_subdirs=use_year_subdirs,
         file_glob=file_glob,
-        # Time subsetting parameter
-        time_subset=time_subset,
+        # New flexible preprocessing approach
+        preprocessing_func=preprocessing_func,
+        preprocessing_kwargs=preprocessing_kwargs,
     )
     
     print(f"\n✅ Processing completed successfully!")

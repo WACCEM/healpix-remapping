@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Example usage of the generalized remap_to_zarr workflow.
+Example usage of the generalized HEALPix remapping workflow.
 
 This script demonstrates how to use the generalized workflow with different
 input datasets that have different file naming conventions.
@@ -13,7 +13,8 @@ from datetime import datetime
 # Add parent directory to path to import modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from remap_imerg_to_zarr import process_imerg_to_zarr
+from remap_to_healpix import process_to_healpix_zarr
+from src.preprocessing import subset_time_by_minute
 
 # =============================================================================
 # Example 1: Original IMERG data format
@@ -25,7 +26,7 @@ from remap_imerg_to_zarr import process_imerg_to_zarr
 def process_imerg_example():
     """Process original IMERG data."""
     
-    process_imerg_to_zarr(
+    process_to_healpix_zarr(
         start_date=datetime(2020, 1, 1),
         end_date=datetime(2020, 1, 31),
         zoom=9,
@@ -55,7 +56,7 @@ def process_imerg_example():
 def process_ir_imerg_example():
     """Process ir_imerg data with hourly timestamps in filename."""
     
-    process_imerg_to_zarr(
+    process_to_healpix_zarr(
         start_date=datetime(2020, 12, 31, 8),    # Include hour
         end_date=datetime(2020, 12, 31, 18),     # Include hour
         zoom=9,
@@ -85,7 +86,7 @@ def process_ir_imerg_example():
 def process_generic_example():
     """Process data with YYYY-MM-DD format in filename."""
     
-    process_imerg_to_zarr(
+    process_to_healpix_zarr(
         start_date=datetime(2020, 1, 1),
         end_date=datetime(2020, 12, 31),
         zoom=9,
@@ -115,7 +116,7 @@ def process_generic_example():
 def process_timestamp_suffix_example():
     """Process data with date at different position in filename."""
     
-    process_imerg_to_zarr(
+    process_to_healpix_zarr(
         start_date=datetime(2020, 1, 1),
         end_date=datetime(2020, 1, 31),
         zoom=9,

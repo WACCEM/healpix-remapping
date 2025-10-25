@@ -20,6 +20,20 @@ default_zoom: 9
 time_chunk_size: 24  # 1 day worth of 1-hour data (balance memory vs parallelism)
 time_average: null  # Options: null (no averaging), "1h" (1-hour), "3h", "6h", "1d" (daily), etc.
 convert_time: True   # Convert cftime.DatetimeJulian to standard datetime64 for pandas compatibility
+
+# Spatial dimension configuration (OPTIONAL)
+# If not specified, spatial dimensions will be auto-detected from the first data file
+# Use this to override auto-detection or for explicit control
+# spatial_dimensions:
+#   lat: -1   # -1 means no chunking (keep full dimension)
+#   lon: -1
+# 
+# Examples for different datasets:
+#   IMERG/IR_IMERG: {lat: -1, lon: -1}
+#   ERA5: {latitude: -1, longitude: -1}
+#   E3SM: {ncol: -1}
+#   CMIP6: {lat: -1, lon: -1} or {latitude: -1, longitude: -1} (varies by model)
+
 # Note: spatial_chunk_size is automatically computed based on zoom level using chunk_tools.compute_chunksize()
 force_recompute: False    # Force recompute weight file even if it exists
 

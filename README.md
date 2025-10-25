@@ -79,6 +79,21 @@ default_zoom: 9                # HEALPix zoom level (9 recommended for ~0.1° da
 time_chunk_size: 24           # Number of time steps per chunk (balance memory/parallelism)
 time_average: "1h"            # Temporal averaging: null, "1h", "3h", "6h", "1d"
 convert_time: True            # Convert cftime to datetime64 for pandas
+
+# Spatial dimension configuration (OPTIONAL - will auto-detect if not specified)
+# spatial_dimensions:         # Override auto-detection for explicit control
+#   lat: -1                   # -1 means no chunking (keep full dimension)
+#   lon: -1
+# 
+# Common spatial dimension names by dataset:
+#   IMERG/IR_IMERG: {lat: -1, lon: -1}
+#   ERA5: {latitude: -1, longitude: -1}
+#   E3SM: {ncol: -1}
+#   CMIP6: varies by model - may be lat/lon or latitude/longitude
+#
+# Note: Auto-detection examines the first data file and identifies coordinate
+# dimensions automatically. Only use explicit config if auto-detection fails
+# or you need to override for a specific reason.
 ```
 
 **d) Dask Configuration (Optimized for I/O-Intensive Operations):**
@@ -151,7 +166,7 @@ python launch_imerg_processing.py 2020-01-01 2020-01-31 9 --overwrite
 ```
 remap_imerg/
 ├── README.md                           # This file
-├── remap_imerg_to_zarr.py             # Main library module
+├── remap_to_healpix.py             # Main library module
 ├── setup.sh                           # Environment setup script
 │
 ├── config/                            # Configuration files
@@ -591,20 +606,26 @@ For files like `merg_2020123108_10km-pixel.nc`:
 
 ```python
 from datetime import datetime
-from remap_imerg_to_zarr import process_imerg_to_zarr
+from remap_to_healpix import process_to_healpix_zarr
+from src.preprocessing import subset_time_by_minute
 
-process_imerg_to_zarr(
+# Flexible approach with optional preprocessing function calls
+process_to_healpix_zarr(
     start_date=datetime(2020, 12, 31, 8),
     end_date=datetime(2020, 12, 31, 18),
     zoom=9,
     output_zarr="/path/to/output.zarr",
     input_base_dir="/data/ir_imerg",
     
-    # ir_imerg specific pattern
+    # IR_IMERG specific file pattern
     date_pattern=r'_(\d{10})_',    # YYYYMMDDhh
     date_format='%Y%m%d%H',
     use_year_subdirs=True,         # Files in YYYY/ subdirectories
     file_glob='merg_*.nc',
+    
+    # Optional: Time subsetting preprocessing (reduces output by 50%)
+    preprocessing_func=subset_time_by_minute,
+    preprocessing_kwargs={'time_subset': '00min'},
     
     convert_time=True,
     overwrite=True
@@ -742,21 +763,33 @@ The current workflow combines **all input files within the date range** into a *
 
 **If you need separate output files** (e.g., one Zarr file per day, month, or year), you'll need to modify the main processing logic:
 
-**File to modify:** `remap_imerg_to_zarr.py` → Main processing loop
+**File to modify:** `remap_to_healpix.py` → Main processing loop
 
 **Approach 1: Multiple time ranges**
 ```python
-# Instead of one large date range
+from datetime import datetime
+import calendar
+from remap_to_healpix import process_to_healpix_zarr
+
+# Instead of one large date range, process month by month
 for year in range(start_year, end_year + 1):
     for month in range(1, 13):
         monthly_start = datetime(year, month, 1)
         monthly_end = datetime(year, month, calendar.monthrange(year, month)[1])
         output_file = f"{output_base}/data_{year}_{month:02d}.zarr"
-        process_imerg_to_zarr(monthly_start, monthly_end, ..., output_zarr=output_file)
+        
+        process_to_healpix_zarr(
+            start_date=monthly_start,
+            end_date=monthly_end,
+            zoom=9,
+            output_zarr=output_file,
+            input_base_dir="/data/input",
+            # ... other parameters ...
+        )
 ```
 
 **Approach 2: Modify internal chunking**
-- Split the time dimension processing in `read_imerg_files()` and `process_imerg_to_zarr()`
+- Split the time dimension processing in `utilities.read_concat_files()` and `process_to_healpix_zarr()`
 - Write separate Zarr files for each temporal chunk
 - Update the output file naming logic
 
