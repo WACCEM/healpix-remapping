@@ -1,6 +1,6 @@
-# Gridded Data to HEALPix Remapping Pipeline
+# HEALPix Remapping Pipeline
 
-[![GitHub](https://img.shields.io/github/license/WACCEM/remap_imerg_healpix)](LICENSE)
+[![GitHub](https://img.shields.io/github/license/WACCEM/healpix-remapping)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 A high-performance, scalable pipeline for remapping **any gridded lat/lon NetCDF dataset** to HEALPix format. Originally designed for IMERG precipitation data, now generalized to work with diverse datasets. Optimized for NERSC Perlmutter with Dask parallel processing and Zarr cloud-native outputs.
@@ -34,7 +34,7 @@ A high-performance, scalable pipeline for remapping **any gridded lat/lon NetCDF
 ```bash
 # On NERSC Perlmutter
 source activate /global/common/software/m1867/python/hackathon
-cd /path/to/remap_imerg
+cd /path/to/healpix-remapping
 ```
 
 ### 2. Test Installation
@@ -174,7 +174,7 @@ python launch_imerg_processing.py 2020-01-01 2020-01-31 9 --overwrite
 ## Project Structure
 
 ```
-remap_imerg/
+healpix-remapping/
 ├── README.md                           # This file
 ├── remap_to_healpix.py             # Main library module
 ├── setup.sh                           # Environment setup script
