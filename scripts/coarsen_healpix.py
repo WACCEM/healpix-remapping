@@ -18,8 +18,11 @@ Examples:
     # Coarsen to zoom 0, specify output directory
     python coarsen_healpix.py data.zarr --output_dir /path/to/output
     
-    # Apply temporal coarsening (1H -> 6H) and spatial coarsening
+    # Apply temporal coarsening (1H -> 6H) using simple factor method
     python coarsen_healpix.py data.zarr --temporal_factor 6 --target_zoom 7
+    
+    # Apply temporal resampling to specific hours (works with any input times)
+    python coarsen_healpix.py data.zarr --target_hours 0 6 12 18 --target_zoom 7
     
     # Use custom compression settings from config file
     python coarsen_healpix.py data.zarr --config my_config.yaml
@@ -28,9 +31,10 @@ Examples:
 import sys
 import argparse
 import yaml
-import xarray as xr
-import zarr
 import numpy as np
+import xarray as xr
+import pandas as pd
+import zarr
 import gc
 import re
 import shutil
@@ -189,8 +193,141 @@ def extract_info_from_filename(filename):
     }
 
 
+def apply_temporal_averaging(ds, file_info, temporal_factor=1, target_hours=None):
+    """
+    Apply temporal averaging to dataset using either resample or coarsen method.
+    
+    Parameters:
+    -----------
+    ds : xr.Dataset
+        Input dataset with time dimension
+    file_info : dict
+        Dictionary with file information including 'time_resolution'
+    temporal_factor : int
+        Temporal coarsening factor for coarsen() method (default: 1)
+    target_hours : list of int, optional
+        Specific hours to align output times to for resample() method
+        
+    Returns:
+    --------
+    tuple : (ds_averaged, file_info_updated)
+        - ds_averaged: Dataset with temporal averaging applied
+        - file_info_updated: Updated file_info dict with new time_resolution
+    """
+    # Make a copy of file_info to avoid modifying the original
+    file_info = file_info.copy()
+    
+    if target_hours is not None:
+        # Use resample() method for flexible time alignment to specific hours
+        logger.info(f"🕒 Applying temporal resampling with target hours: {target_hours}")
+        logger.info(f"   Original time dimension: {ds.sizes['time']} timesteps")
+        
+        # Determine output frequency from target hours
+        if len(target_hours) < 2:
+            raise ValueError("target_hours must contain at least 2 hours")
+        
+        hour_diff = target_hours[1] - target_hours[0]
+        output_freq = f'{hour_diff}h'
+        
+        # Get base hour for offset
+        base_hour = target_hours[0]
+        offset_str = f'{base_hour}h'
+        
+        logger.info(f"   Using resample: freq={output_freq}, offset={offset_str}")
+        logger.info(f"   This method works regardless of input time alignment")
+        
+        # Use xarray's resample method (handles any input time structure)
+        ds_resampled = ds.resample(
+            time=output_freq,
+            offset=offset_str,
+            label='left',      # Label with the left (start) edge of each interval
+            closed='left'      # Left-closed intervals: [start, end)
+        ).mean()
+        
+        # Verify alignment
+        sample_times = pd.DatetimeIndex(ds_resampled.time.values)
+        output_hours_actual = sorted(sample_times.hour.unique())
+        logger.info(f"   After resampling: {ds_resampled.sizes['time']} timesteps")
+        logger.info(f"   Output hours: {output_hours_actual}")
+        logger.info(f"   First few times: {sample_times[:min(4, len(sample_times))].strftime('%Y-%m-%d %H:%M').tolist()}")
+        
+        # Check alignment
+        misaligned = [h for h in output_hours_actual if h not in target_hours]
+        if misaligned:
+            logger.warning(f"   ⚠️  Some output hours not in target list: {misaligned}")
+        else:
+            logger.info(f"   ✓ All output times aligned to target hours!")
+        
+        # Update time resolution for filename
+        if file_info['time_resolution']:
+            original_res = file_info['time_resolution']
+            file_info['time_resolution'] = f"{hour_diff}H"
+            logger.info(f"   Updated time resolution: {original_res} -> {file_info['time_resolution']}")
+        else:
+            file_info['time_resolution'] = f"{hour_diff}H"
+            logger.info(f"   Set time resolution: {file_info['time_resolution']}")
+        
+        return ds_resampled, file_info
+        
+    elif temporal_factor > 1:
+        # Use coarsen() method for simple integer factor averaging
+        logger.info(f"🕒 Applying temporal coarsening: factor {temporal_factor}")
+        logger.info(f"   Original time dimension: {ds.sizes['time']} timesteps")
+        logger.info(f"   Note: This method requires evenly spaced times starting from standard hours")
+        
+        # Check if temporal coarsening is possible
+        if ds.sizes['time'] % temporal_factor != 0:
+            logger.warning(f"Time dimension ({ds.sizes['time']}) not evenly divisible by temporal_factor ({temporal_factor})")
+            logger.warning(f"Will truncate to {(ds.sizes['time'] // temporal_factor) * temporal_factor} timesteps")
+            # Truncate to make it evenly divisible
+            ds = ds.isel(time=slice(0, (ds.sizes['time'] // temporal_factor) * temporal_factor))
+        
+        # Perform temporal coarsening using xarray's coarsen
+        ds_coarsened = ds.coarsen(time=temporal_factor, boundary='trim').mean()
+        
+        # Fix time coordinates to use beginning of time window instead of center
+        # Get the original time coordinates for the beginning of each window
+        original_times = ds.time.values
+        window_starts = original_times[::temporal_factor]  # Every temporal_factor-th time step
+        
+        # Ensure we have the right number of time coordinates
+        n_coarse_times = ds_coarsened.sizes['time']
+        if len(window_starts) >= n_coarse_times:
+            new_times = window_starts[:n_coarse_times]
+        else:
+            # This shouldn't happen with boundary='trim', but just in case
+            new_times = window_starts
+        
+        # Assign the corrected time coordinates
+        ds_coarsened = ds_coarsened.assign_coords(time=new_times)
+        logger.info(f"   After temporal coarsening: {ds_coarsened.sizes['time']} timesteps")
+        logger.info(f"   Time coordinates corrected to window start times")
+        logger.info(f"   First few corrected times: {ds_coarsened.time.dt.strftime('%Y-%m-%d %H:%M').values[:4]}")
+        
+        # Update time resolution in filename info for output naming
+        if file_info['time_resolution']:
+            original_res = file_info['time_resolution']
+            if original_res.endswith('H'):
+                new_hours = int(original_res[:-1]) * temporal_factor
+                if new_hours >= 24 and new_hours % 24 == 0:
+                    file_info['time_resolution'] = f"{new_hours // 24}D"
+                else:
+                    file_info['time_resolution'] = f"{new_hours}H"
+            elif original_res.endswith('D'):
+                new_days = int(original_res[:-1]) * temporal_factor
+                file_info['time_resolution'] = f"{new_days}D"
+            logger.info(f"   Updated time resolution: {original_res} -> {file_info['time_resolution']}")
+        
+        return ds_coarsened, file_info
+    
+    else:
+        # No temporal averaging requested
+        return ds, file_info
+
+
 def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_factor=1, 
-                         time_chunk_size=24, compression_config=None, overwrite=False):
+                         target_hours=None, time_chunk_size=24, compression_config=None, 
+                         overwrite=False):
     """
     Coarsen HEALPix data from high zoom level to progressively lower levels.
     Optionally performs temporal coarsening (averaging) as well.
@@ -206,6 +343,11 @@ def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_fa
     temporal_factor : int
         Temporal coarsening factor (default: 1, no temporal coarsening)
         e.g., 3 for 1H->3H, 6 for 1H->6H, 24 for 1H->1D
+        Ignored if target_hours is provided.
+    target_hours : list of int, optional
+        Specific hours to align output times to (e.g., [0, 6, 12, 18] for 6-hourly).
+        If provided, uses xarray.resample() for flexible time alignment.
+        If None, uses simple coarsen() with temporal_factor (requires evenly divisible times).
     time_chunk_size : int
         Chunk size for time dimension (default: 24)
     compression_config : dict, optional
@@ -236,53 +378,9 @@ def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_fa
     logger.info(f"Dataset loaded: {ds.sizes}")
     logger.info(f"Variables: {list(ds.data_vars)}")
     
-    # Apply temporal coarsening first if requested
-    if temporal_factor > 1:
-        logger.info(f"🕒 Applying temporal coarsening: factor {temporal_factor}")
-        logger.info(f"   Original time dimension: {ds.sizes['time']} timesteps")
-        
-        # Check if temporal coarsening is possible
-        if ds.sizes['time'] % temporal_factor != 0:
-            logger.warning(f"Time dimension ({ds.sizes['time']}) not evenly divisible by temporal_factor ({temporal_factor})")
-            logger.warning(f"Will truncate to {(ds.sizes['time'] // temporal_factor) * temporal_factor} timesteps")
-            # Truncate to make it evenly divisible
-            ds = ds.isel(time=slice(0, (ds.sizes['time'] // temporal_factor) * temporal_factor))
-        
-        # Perform temporal coarsening using xarray's coarsen
-        ds_coarsened = ds.coarsen(time=temporal_factor, boundary='trim').mean()
-        
-        # Fix time coordinates to use beginning of time window instead of center
-        # Get the original time coordinates for the beginning of each window
-        original_times = ds.time.values
-        window_starts = original_times[::temporal_factor]  # Every temporal_factor-th time step
-        
-        # Ensure we have the right number of time coordinates
-        n_coarse_times = ds_coarsened.sizes['time']
-        if len(window_starts) >= n_coarse_times:
-            new_times = window_starts[:n_coarse_times]
-        else:
-            # This shouldn't happen with boundary='trim', but just in case
-            new_times = window_starts
-        
-        # Assign the corrected time coordinates
-        ds = ds_coarsened.assign_coords(time=new_times)
-        logger.info(f"   After temporal coarsening: {ds.sizes['time']} timesteps")
-        logger.info(f"   Time coordinates corrected to window start times")
-        logger.info(f"   First few corrected times: {ds.time.dt.strftime('%Y-%m-%d %H:%M').values[:4]}")
-        
-        # Update time resolution in filename info for output naming
-        if file_info['time_resolution']:
-            original_res = file_info['time_resolution']
-            if original_res.endswith('H'):
-                new_hours = int(original_res[:-1]) * temporal_factor
-                if new_hours >= 24 and new_hours % 24 == 0:
-                    file_info['time_resolution'] = f"{new_hours // 24}D"
-                else:
-                    file_info['time_resolution'] = f"{new_hours}H"
-            elif original_res.endswith('D'):
-                new_days = int(original_res[:-1]) * temporal_factor
-                file_info['time_resolution'] = f"{new_days}D"
-            logger.info(f"   Updated time resolution: {original_res} -> {file_info['time_resolution']}")
+    # Apply temporal averaging if requested
+    if temporal_factor > 1 or target_hours is not None:
+        ds, file_info = apply_temporal_averaging(ds, file_info, temporal_factor, target_hours)
     
     # Determine output directory
     if output_dir is None:
@@ -335,14 +433,23 @@ def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_fa
             logger.info(f"   Updated HEALPix nside to: {2**zoom_level}")
 
         # Add processing metadata
-        coarsened_ds.attrs.update({
+        metadata_updates = {
             'coarsened_from_zoom': zoom_level + 1,
             'coarsening_method': 'mean',
             'coarsening_factor': 4,
-            'temporal_coarsening_factor': temporal_factor if temporal_factor > 1 else None,
             'processing_timestamp': datetime.now().isoformat(),
             'source_file': str(input_path.name)
-        })
+        }
+        
+        # Add temporal processing info if applicable
+        if target_hours is not None:
+            metadata_updates['temporal_resampling_method'] = 'resample'
+            metadata_updates['temporal_target_hours'] = str(target_hours)
+        elif temporal_factor > 1:
+            metadata_updates['temporal_coarsening_factor'] = temporal_factor
+            metadata_updates['temporal_resampling_method'] = 'coarsen'
+        
+        coarsened_ds.attrs.update(metadata_updates)
         
         # Prepare chunking (use provided time chunk size, compute spatial chunks efficiently)
         spatial_chunk_size = chunk_tools.compute_chunksize(zoom_level)
@@ -391,11 +498,25 @@ def parse_arguments():
     # Coarsen to zoom 0, specify output directory
     %(prog)s /path/to/data.zarr --output_dir /path/to/output
     
-    # Apply temporal coarsening (1H -> 6H) and spatial coarsening
+    # Apply temporal coarsening (1H -> 6H) using simple factor method
     %(prog)s data.zarr --temporal_factor 6 --target_zoom 7
+    
+    # Resample to specific hours (more flexible, works with any input times)
+    %(prog)s data.zarr --target_hours 0 6 12 18 --target_zoom 7
     
     # Use custom compression settings from config file
     %(prog)s data.zarr --config my_config.yaml --overwrite
+
+    Temporal Averaging Methods:
+    1. --temporal_factor: Simple integer factor (e.g., 6 for 1H->6H)
+        - Requires evenly spaced input times
+        - Uses xarray.coarsen() method
+        - Works well when input starts at standard hours (0, 6, 12, 18)
+    
+    2. --target_hours: Resample to specific hours (e.g., 0 6 12 18)
+        - Works with ANY input time structure
+        - Uses xarray.resample() method
+        - Preferred when input times don't align with standard hours
             """
     )
     
@@ -413,7 +534,14 @@ def parse_arguments():
     
     parser.add_argument('--temporal_factor', '-t', type=int, default=1,
                         help='Temporal coarsening factor (default: 1, no temporal coarsening). '
-                             'E.g., 3 for 1H->3H, 6 for 1H->6H, 24 for 1H->1D')
+                             'E.g., 3 for 1H->3H, 6 for 1H->6H, 24 for 1H->1D. '
+                             'Note: This requires evenly spaced times. '
+                             'Ignored if --target_hours is specified.')
+    
+    parser.add_argument('--target_hours', type=int, nargs='+',
+                        help='Specific hours of day to align output to (e.g., 0 6 12 18 for 6-hourly). '
+                             'This method works with any input time structure and uses xarray.resample(). '
+                             'If specified, --temporal_factor is ignored.')
     
     parser.add_argument('--time_chunk_size', type=int, default=24,
                         help='Chunk size for time dimension in output (default: 24)')
@@ -471,7 +599,17 @@ def main():
     
     logger.info(f"Input file: {input_path}")
     logger.info(f"Target zoom level: {args.target_zoom}")
-    logger.info(f"Temporal coarsening factor: {args.temporal_factor}")
+    
+    # Log temporal processing options
+    if args.target_hours:
+        logger.info(f"Temporal resampling: target hours = {args.target_hours}")
+        logger.info(f"  (Using xarray.resample() method - works with any time structure)")
+    elif args.temporal_factor > 1:
+        logger.info(f"Temporal coarsening factor: {args.temporal_factor}")
+        logger.info(f"  (Using coarsen() method - requires evenly spaced times)")
+    else:
+        logger.info(f"No temporal averaging (temporal_factor=1)")
+    
     logger.info(f"Time chunk size: {args.time_chunk_size}")
     logger.info(f"Overwrite existing files: {args.overwrite}")
     if args.output_dir:
@@ -486,6 +624,7 @@ def main():
             output_dir=args.output_dir,
             target_zoom=args.target_zoom,
             temporal_factor=args.temporal_factor,
+            target_hours=args.target_hours,
             time_chunk_size=args.time_chunk_size,
             compression_config=compression_config,
             overwrite=args.overwrite

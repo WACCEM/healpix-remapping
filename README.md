@@ -456,6 +456,70 @@ output.zarr/
 - Chunk configuration
 - Compression settings
 
+
+## Post-Processing Scripts
+
+### coarsen_healpix.py
+
+Located in `scripts/coarsen_healpix.py`, this utility performs spatial and temporal coarsening of HEALPix datasets stored in Zarr format. It works with any HEALPix data, not limited to specific datasets.
+
+#### Features
+
+- **Spatial Coarsening**: Reduces HEALPix resolution by aggregating data to a lower zoom level
+- **Temporal Coarsening**: Two methods available:
+  - `--temporal_factor`: Simple integer downsampling (e.g., factor=6 averages every 6 time steps)
+  - `--target_hours`: Flexible resampling to specific hour alignments (e.g., [0, 6, 12, 18] for 6-hourly data)
+- **Flexible I/O**: Works with any HEALPix Zarr dataset structure
+- **Optional Configuration**: Supports custom compression settings via YAML config file
+- **Chunked Processing**: Memory-efficient processing with configurable time chunk sizes
+
+#### Usage Examples
+
+**Basic spatial coarsening** (reduce resolution):
+```bash
+python scripts/coarsen_healpix.py \
+    /path/to/input.zarr \
+    --output_dir /path/to/output \
+    --target_zoom 4
+```
+
+**Temporal averaging with target hours** (resample to 6-hourly at specific times):
+```bash
+python scripts/coarsen_healpix.py \
+    /path/to/input.zarr \
+    --output_dir /path/to/output \
+    --target_zoom 4 \
+    --target_hours 0 6 12 18
+```
+
+**Simple temporal downsampling** (average every 6 time steps):
+```bash
+python scripts/coarsen_healpix.py \
+    /path/to/input.zarr \
+    --output_dir /path/to/output \
+    --target_zoom 4 \
+    --temporal_factor 6
+```
+
+**With custom configuration**:
+```bash
+python scripts/coarsen_healpix.py \
+    /path/to/input.zarr \
+    --output_dir /path/to/output \
+    --target_zoom 4 \
+    --config config/my_compression_config.yaml
+```
+
+#### When to Use Each Temporal Method
+
+- Use `--temporal_factor` when your input data has regular time intervals and you want simple downsampling
+- Use `--target_hours` when you need output aligned to specific hours of the day, regardless of input time structure (e.g., converting 3-hourly data at hours [1, 4, 7, 10...] to 6-hourly at [0, 6, 12, 18])
+
+For complete usage information, run:
+```bash
+python scripts/coarsen_healpix.py --help
+```
+
 ## Troubleshooting
 
 ### General Issues
