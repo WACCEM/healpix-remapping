@@ -41,6 +41,7 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 import logging
+import intake
 
 # Add parent directory to path to import modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -134,12 +135,48 @@ def get_encoding(dataset, compression_config=None):
             }
     
     # Set encoding for coordinate variables based on their actual data type
-    if 'cell' in dataset.dims and 'cell' in dataset.coords:
-        cell_var = dataset.coords['cell']
-        if cell_var.dtype.kind == 'i':  # integer
-            encoding['cell'] = {'dtype': 'int32'}
-        elif cell_var.dtype.kind == 'f':  # floating point
-            encoding['cell'] = {'dtype': 'float32'}
+    # Handle all coordinate variables that have a 'cell' dimension
+    for coord_name in dataset.coords:
+        coord_var = dataset.coords[coord_name]
+        
+        # Skip time coordinate (handled differently)
+        if coord_name == 'time':
+            continue
+            
+        # For coordinates with 'cell' dimension, match the chunking
+        if 'cell' in coord_var.dims:
+            # Get the actual chunks from the variable if it's dask-backed
+            if hasattr(coord_var.data, 'chunks'):
+                # coord_var.data.chunks is a tuple of tuples, one per dimension
+                # e.g., ((262144, 262144, 262144),) for a single dimension
+                # We need to convert to a tuple of ints: (262144,)
+                # by taking the first chunk size from each dimension
+                actual_chunks = coord_var.data.chunks
+                # Convert tuple of tuples to tuple of ints (first chunk size per dim)
+                chunk_sizes = tuple(chunks[0] for chunks in actual_chunks)
+                
+                encoding[coord_name] = {
+                    'chunks': chunk_sizes,
+                    'compressor': zarr.Blosc(
+                        cname=compression_config.get('compressor', 'zstd'),
+                        clevel=compression_config.get('compressor_level', 3),
+                        shuffle=2
+                    )
+                }
+                if coord_var.dtype.kind == 'f':
+                    encoding[coord_name]['dtype'] = 'float32'
+            else:
+                # Not chunked, just set dtype
+                if coord_var.dtype.kind == 'i':
+                    encoding[coord_name] = {'dtype': 'int32'}
+                elif coord_var.dtype.kind == 'f':
+                    encoding[coord_name] = {'dtype': 'float32'}
+        elif coord_name == 'cell':
+            # Special handling for cell coordinate itself
+            if coord_var.dtype.kind == 'i':
+                encoding[coord_name] = {'dtype': 'int32'}
+            elif coord_var.dtype.kind == 'f':
+                encoding[coord_name] = {'dtype': 'float32'}
     
     return encoding
 
@@ -191,6 +228,56 @@ def extract_info_from_filename(filename):
         'start_date': start_date,
         'end_date': end_date
     }
+
+
+def apply_temporal_subsampling(ds, file_info, subsample_factor):
+    """
+    Subsample (select every Nth timestep) without averaging.
+    Useful for instantaneous data where averaging is not needed.
+    
+    Parameters:
+    -----------
+    ds : xr.Dataset
+        Input dataset with time dimension
+    file_info : dict
+        Dictionary with file information including 'time_resolution'
+    subsample_factor : int
+        Subsampling factor (e.g., 3 for selecting every 3rd timestep)
+        
+    Returns:
+    --------
+    tuple : (ds_subsampled, file_info_updated)
+        - ds_subsampled: Dataset with subsampled time dimension
+        - file_info_updated: Updated file_info dict with new time_resolution
+    """
+    # Make a copy of file_info to avoid modifying the original
+    file_info = file_info.copy()
+    
+    logger.info(f"🕒 Applying temporal subsampling: factor {subsample_factor}")
+    logger.info(f"   Original time dimension: {ds.sizes['time']} timesteps")
+    logger.info(f"   Selecting every {subsample_factor} timestep (no averaging)")
+    
+    # Simple subsampling using isel with slice
+    ds_subsampled = ds.isel(time=slice(None, None, subsample_factor))
+    
+    logger.info(f"   After subsampling: {ds_subsampled.sizes['time']} timesteps")
+    logger.info(f"   First few times: {ds_subsampled.time.dt.strftime('%Y-%m-%d %H:%M').values[:min(4, ds_subsampled.sizes['time'])]}")
+    
+    # Update time resolution in filename info for output naming
+    if file_info['time_resolution']:
+        original_res = file_info['time_resolution']
+        if original_res.endswith('H'):
+            new_hours = int(original_res[:-1]) * subsample_factor
+            if new_hours >= 24 and new_hours % 24 == 0:
+                file_info['time_resolution'] = f"{new_hours // 24}D"
+            else:
+                file_info['time_resolution'] = f"{new_hours}H"
+        elif original_res.endswith('D'):
+            new_days = int(original_res[:-1]) * subsample_factor
+            file_info['time_resolution'] = f"{new_days}D"
+        logger.info(f"   Updated time resolution: {original_res} -> {file_info['time_resolution']}")
+    
+    return ds_subsampled, file_info
 
 
 def apply_temporal_averaging(ds, file_info, temporal_factor=1, target_hours=None):
@@ -325,51 +412,52 @@ def apply_temporal_averaging(ds, file_info, temporal_factor=1, target_hours=None
         return ds, file_info
 
 
-def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_factor=1, 
-                         target_hours=None, time_chunk_size=24, compression_config=None, 
-                         direct_coarsen=False, overwrite=False):
+def coarsen_healpix_data(ds, start_zoom, output_dir, target_zoom=0, temporal_factor=1, 
+                         target_hours=None, time_subsample_factor=1, time_chunk_size=24, 
+                         compression_config=None, overwrite=False):
     """
     Coarsen HEALPix data from high zoom level to progressively lower levels.
-    Optionally performs temporal coarsening (averaging) as well.
+    Optionally performs temporal coarsening (averaging) or subsampling.
     
     Parameters:
     -----------
-    input_zarr : str or Path
-        Path to input Zarr file (highest zoom level)
-    output_dir : str or Path, optional
-        Output directory for coarsened files. If None, uses same directory as input.
+    ds : xarray.Dataset
+        Input dataset (highest zoom level)
+    start_zoom : int
+        Input zoom level of the dataset
+    output_dir : str or Path
+        Output directory for coarsened files.
     target_zoom : int
         Target zoom level to coarsen down to (default: 0)
     temporal_factor : int
-        Temporal coarsening factor (default: 1, no temporal coarsening)
+        Temporal coarsening factor for AVERAGING (default: 1, no temporal coarsening)
         e.g., 3 for 1H->3H, 6 for 1H->6H, 24 for 1H->1D
-        Ignored if target_hours is provided.
+        Ignored if target_hours or time_subsample_factor is provided.
     target_hours : list of int, optional
         Specific hours to align output times to (e.g., [0, 6, 12, 18] for 6-hourly).
-        If provided, uses xarray.resample() for flexible time alignment.
-        If None, uses simple coarsen() with temporal_factor (requires evenly divisible times).
+        If provided, uses xarray.resample() for flexible time alignment with AVERAGING.
+        If specified, time_subsample_factor and temporal_factor are ignored.
+    time_subsample_factor : int
+        Temporal subsampling factor for SELECTING every Nth timestep WITHOUT averaging (default: 1)
+        e.g., 3 for selecting every 3rd timestep from 1H to 3H instantaneous data
+        Ignored if target_hours is provided. Takes precedence over temporal_factor.
     time_chunk_size : int
         Chunk size for time dimension (default: 24)
     compression_config : dict, optional
         Compression configuration. If None, uses default settings.
-    direct_coarsen : bool
-        If True, coarsens directly from start_zoom to target_zoom in one step.
-        If False (default), sequentially coarsens through all intermediate zoom levels.
-        Direct coarsening is faster but only creates the target zoom level.
-        Sequential coarsening creates all intermediate levels (start_zoom-1, start_zoom-2, ..., target_zoom).
     overwrite : bool
         Whether to overwrite existing files (default: False)
     """
     
-    # Extract information from input filename
-    input_path = Path(input_zarr)
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input file not found: {input_zarr}")
+    # # Extract information from input filename
+    # input_path = Path(input_zarr)
+    # if not input_path.exists():
+    #     raise FileNotFoundError(f"Input file not found: {input_zarr}")
     
-    file_info = extract_info_from_filename(input_path.name)
-    start_zoom = file_info['zoom']
+    # file_info = extract_info_from_filename(input_path.name)
+    # start_zoom = file_info['zoom']
     
-    logger.info(f"Processing: {input_path.name}")
+    # logger.info(f"Processing: {input_path.name}")
     logger.info(f"Starting zoom level: {start_zoom}")
     logger.info(f"Target zoom level: {target_zoom}")
     
@@ -377,135 +465,146 @@ def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_fa
         logger.warning(f"Start zoom ({start_zoom}) must be higher than target zoom ({target_zoom})")
         return
     
-    # Load the highest resolution dataset
-    logger.info(f"Loading dataset from: {input_zarr}")
-    ds = xr.open_zarr(input_zarr)
-    logger.info(f"Dataset loaded: {ds.sizes}")
-    logger.info(f"Variables: {list(ds.data_vars)}")
+    # # Load the highest resolution dataset
+    # logger.info(f"Loading dataset from: {input_zarr}")
+    # ds = xr.open_zarr(input_zarr)
+    # logger.info(f"Dataset loaded: {ds.sizes}")
+    # logger.info(f"Variables: {list(ds.data_vars)}")
+
+
+    # Get start and end dates from time coordinate
+    start_date = ds.time.min().dt.strftime('%Y%m%d').item()
+    end_date = ds.time.max().dt.strftime('%Y%m%d').item()
+    # Make file_info dictionary (hardcoded for this example)
+    file_info = {
+        'base_name': 'ifs_tco3999_rcbmf',
+        'time_resolution': '1H',
+        'zoom': start_zoom,
+        'start_date': start_date,
+        'end_date': end_date
+    }
     
-    # Apply temporal averaging if requested
-    if temporal_factor > 1 or target_hours is not None:
+    # Apply temporal processing if requested
+    # Priority: target_hours > time_subsample_factor > temporal_factor
+    if target_hours is not None:
+        # Resample with averaging to specific hours
         ds, file_info = apply_temporal_averaging(ds, file_info, temporal_factor, target_hours)
+    elif time_subsample_factor > 1:
+        # Subsample (select every Nth timestep) without averaging
+        ds, file_info = apply_temporal_subsampling(ds, file_info, time_subsample_factor)
+    elif temporal_factor > 1:
+        # Coarsen with averaging
+        ds, file_info = apply_temporal_averaging(ds, file_info, temporal_factor, target_hours=None)
     
     # Determine output directory
-    if output_dir is None:
-        # Use same directory as input
-        output_dir = input_path.parent
-    else:
-        output_dir = Path(output_dir)
-    
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {output_dir}")
     
-    # Determine coarsening strategy
-    if direct_coarsen:
-        logger.info(f"Using DIRECT coarsening mode (single step from zoom {start_zoom} to zoom {target_zoom})")
-        zoom_levels_to_process = [target_zoom]
-    else:
-        logger.info(f"Using SEQUENTIAL coarsening mode (all intermediate levels)")
-        zoom_levels_to_process = list(range(start_zoom - 1, target_zoom - 1, -1))
-    
-    # Start coarsening
+    # Direct coarsening to target zoom (no intermediate levels)
     current_ds = ds
+    zoom_level = target_zoom
     
-    for zoom_level in zoom_levels_to_process:
-        logger.info(f"🔄 Coarsening to zoom level {zoom_level}...")
-        
-        # Generate output filename with time resolution preserved
-        if file_info['time_resolution']:
-            output_filename = f"{file_info['base_name']}_{file_info['time_resolution']}_zoom{zoom_level}_{file_info['start_date']}_{file_info['end_date']}.zarr"
-        else:
-            output_filename = f"{file_info['base_name']}_zoom{zoom_level}_{file_info['start_date']}_{file_info['end_date']}.zarr"
-        output_path = output_dir / output_filename
-        
-        # Check if output already exists
-        if output_path.exists() and not overwrite:
-            logger.warning(f"Output file already exists (use --overwrite to replace): {output_path}")
-            continue
-        elif output_path.exists() and overwrite:
-            logger.info(f"Removing existing file: {output_path}")
-            shutil.rmtree(output_path)
-        
-        # Calculate coarsening factor based on current dataset zoom level
-        # In direct mode: coarsen from start_zoom to target_zoom
-        # In sequential mode: coarsen by factor of 4 (one zoom level at a time)
-        if direct_coarsen:
-            # Calculate factor for direct coarsening from start_zoom to zoom_level
-            zoom_diff = start_zoom - zoom_level
-            coarsen_factor = 4 ** zoom_diff
-            logger.info(f"   Direct coarsening: zoom difference = {zoom_diff}, factor = {coarsen_factor}")
-        else:
-            # Sequential coarsening: always factor of 4 (one level at a time)
-            coarsen_factor = 4
-        
-        logger.info(f"   Coarsening {current_ds.sizes['cell']} cells to {current_ds.sizes['cell']//coarsen_factor} cells")
-        
-        # Use simple coarsening approach
-        # This preserves the coordinate structure automatically
-        coarsened_ds = current_ds.coarsen(cell=coarsen_factor).mean()
-        
-        # Ensure cell coordinate remains integer type (critical for HEALPix compatibility)
-        n_cells_coarse = coarsened_ds.sizes['cell']
-        coarsened_ds = coarsened_ds.assign_coords(
-            cell=np.arange(n_cells_coarse, dtype='int64')
-        )
-
-        # Update HEALPix metadata
-        if 'crs' in coarsened_ds:
-            coarsened_ds['crs'].attrs['healpix_nside'] = 2**zoom_level
-            coarsened_ds['crs'].attrs['healpix_order'] = zoom_level
-            logger.info(f"   Updated HEALPix nside to: {2**zoom_level}")
-
-        # Add processing metadata
-        metadata_updates = {
-            'coarsened_from_zoom': start_zoom if direct_coarsen else zoom_level + 1,
-            'coarsening_method': 'mean',
-            'coarsening_factor': coarsen_factor,
-            'coarsening_mode': 'direct' if direct_coarsen else 'sequential',
-            'processing_timestamp': datetime.now().isoformat(),
-            'source_file': str(input_path.name)
-        }
-        
-        # Add temporal processing info if applicable
-        if target_hours is not None:
-            metadata_updates['temporal_resampling_method'] = 'resample'
-            metadata_updates['temporal_target_hours'] = str(target_hours)
-        elif temporal_factor > 1:
-            metadata_updates['temporal_coarsening_factor'] = temporal_factor
-            metadata_updates['temporal_resampling_method'] = 'coarsen'
-        
-        coarsened_ds.attrs.update(metadata_updates)
-        
-        # Prepare chunking (use provided time chunk size, compute spatial chunks efficiently)
-        spatial_chunk_size = chunk_tools.compute_chunksize(zoom_level)
-        
-        chunked_ds = coarsened_ds.chunk({
-            'time': time_chunk_size,
-            'cell': spatial_chunk_size
-        })
-        
-        # Write to Zarr with compression
-        logger.info(f"   Writing to: {output_path}")
-        store = zarr.storage.DirectoryStore(str(output_path), dimension_separator="/")
-        
-        encoding = get_encoding(chunked_ds, compression_config)
-        chunked_ds.to_zarr(store, encoding=encoding, consolidated=True)
-        
-        logger.info(f"✅ Successfully wrote zoom {zoom_level}: {output_path}")
-        logger.info(f"   Final size: {chunked_ds.sizes}")
-        
-        # Clean up and prepare for next iteration
-        current_ds.close()
-        del current_ds
-        current_ds = coarsened_ds
-        del store
-        gc.collect()
-        
-        logger.info(f"   Memory cleanup completed")
+    logger.info(f"🔄 Direct coarsening from zoom {start_zoom} to zoom level {zoom_level}...")
     
-    # Clean up final dataset
+    # Generate output filename with time resolution preserved
+    if file_info['time_resolution']:
+        output_filename = f"{file_info['base_name']}_{file_info['time_resolution']}_zoom{zoom_level}_{file_info['start_date']}_{file_info['end_date']}.zarr"
+    else:
+        output_filename = f"{file_info['base_name']}_zoom{zoom_level}_{file_info['start_date']}_{file_info['end_date']}.zarr"
+    output_path = output_dir / output_filename
+
+    # Check if output already exists
+    if output_path.exists() and not overwrite:
+        logger.warning(f"Output file already exists (use --overwrite to replace): {output_path}")
+        logger.info("Exiting without processing.")
+        return
+    elif output_path.exists() and overwrite:
+        logger.info(f"Removing existing file: {output_path}")
+        shutil.rmtree(output_path)
+    
+    # Calculate coarsening factor for direct coarsening
+    # Each zoom level reduces resolution by factor of 4 (2^2)
+    zoom_diff = start_zoom - zoom_level
+    coarsen_factor = 4 ** zoom_diff
+    
+    logger.info(f"   Zoom difference: {zoom_diff}, coarsening factor: {coarsen_factor}")
+    logger.info(f"   Coarsening {current_ds.sizes['cell']} cells to {current_ds.sizes['cell']//coarsen_factor} cells")
+    
+    # Use simple coarsening approach with calculated factor
+    # This preserves the coordinate structure automatically
+    coarsened_ds = current_ds.coarsen(cell=coarsen_factor).mean()
+    
+    # Ensure cell coordinate remains integer type (critical for HEALPix compatibility)
+    n_cells_coarse = coarsened_ds.sizes['cell']
+    coarsened_ds = coarsened_ds.assign_coords(
+        cell=np.arange(n_cells_coarse, dtype='int64')
+    )
+
+    # Update HEALPix metadata
+    if 'crs' in coarsened_ds:
+        coarsened_ds['crs'].attrs['healpix_nside'] = 2**zoom_level
+        coarsened_ds['crs'].attrs['healpix_order'] = zoom_level
+        logger.info(f"   Updated HEALPix nside to: {2**zoom_level}")
+
+    # Add processing metadata
+    metadata_updates = {
+        'coarsened_from_zoom': start_zoom,
+        'coarsening_method': 'mean',
+        'coarsening_factor': coarsen_factor,
+        'processing_timestamp': datetime.now().isoformat(),
+        'source_catalog': f"{file_info['base_name']}_zoom{start_zoom}"
+    }
+    
+    # Add temporal processing info if applicable
+    if target_hours is not None:
+        metadata_updates['temporal_resampling_method'] = 'resample'
+        metadata_updates['temporal_target_hours'] = str(target_hours)
+    elif time_subsample_factor > 1:
+        metadata_updates['temporal_subsample_factor'] = time_subsample_factor
+        metadata_updates['temporal_resampling_method'] = 'subsample'
+    elif temporal_factor > 1:
+        metadata_updates['temporal_coarsening_factor'] = temporal_factor
+        metadata_updates['temporal_resampling_method'] = 'coarsen'
+    
+    coarsened_ds.attrs.update(metadata_updates)
+    
+    # Prepare chunking (use provided time chunk size, compute spatial chunks efficiently)
+    spatial_chunk_size = chunk_tools.compute_chunksize(zoom_level)
+    
+    # Chunk the dataset - this will rechunk data variables and coordinates consistently
+    chunked_ds = coarsened_ds.chunk({
+        'time': time_chunk_size,
+        'cell': spatial_chunk_size
+    })
+    
+    # Ensure all coordinate variables with 'cell' dimension are also properly chunked
+    # This is critical to avoid encoding/chunk mismatch errors
+    coords_to_rechunk = {}
+    for coord_name in chunked_ds.coords:
+        if 'cell' in chunked_ds.coords[coord_name].dims and coord_name != 'cell':
+            coords_to_rechunk[coord_name] = chunked_ds.coords[coord_name].chunk({'cell': spatial_chunk_size})
+    
+    if coords_to_rechunk:
+        chunked_ds = chunked_ds.assign_coords(coords_to_rechunk)
+        logger.info(f"   Rechunked coordinate variables: {list(coords_to_rechunk.keys())}")
+    
+    # Write to Zarr with compression
+    logger.info(f"   Writing to: {output_path}")
+    store = zarr.storage.DirectoryStore(str(output_path), dimension_separator="/")
+    
+    encoding = get_encoding(chunked_ds, compression_config)
+    chunked_ds.to_zarr(store, encoding=encoding, consolidated=True)
+    
+    logger.info(f"✅ Successfully wrote zoom {zoom_level}: {output_path}")
+    logger.info(f"   Final size: {chunked_ds.sizes}")
+    
+    # Clean up
     current_ds.close()
+    coarsened_ds.close()
     ds.close()
+    del store
+    gc.collect()
     
     logger.info("🎉 Coarsening completed successfully!")
 
@@ -517,59 +616,72 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
     Examples:
-    # Sequential coarsening from zoom 9 down to zoom 5 (creates zoom 8, 7, 6, 5)
+    # Coarsen from zoom 9 down to zoom 5
     %(prog)s IMERG_V7_1H_zoom9_20200101_20200131.zarr --target_zoom 5
-    
-    # Direct coarsening from zoom 9 to zoom 5 (creates only zoom 5, faster)
-    %(prog)s IMERG_V7_1H_zoom9_20200101_20200131.zarr --target_zoom 5 --direct-coarsen
     
     # Coarsen to zoom 0, specify output directory
     %(prog)s /path/to/data.zarr --output_dir /path/to/output
     
-    # Apply temporal coarsening (1H -> 6H) using simple factor method
+    # Apply temporal coarsening (1H -> 6H) using simple factor method WITH AVERAGING
     %(prog)s data.zarr --temporal_factor 6 --target_zoom 7
     
-    # Resample to specific hours (more flexible, works with any input times)
+    # Subsample time (1H -> 3H) WITHOUT AVERAGING (for instantaneous data)
+    %(prog)s data.zarr --time_subsample_factor 3 --target_zoom 7
+    
+    # Resample to specific hours (more flexible, works with any input times) WITH AVERAGING
     %(prog)s data.zarr --target_hours 0 6 12 18 --target_zoom 7
     
     # Use custom compression settings from config file
     %(prog)s data.zarr --config my_config.yaml --overwrite
 
-    Temporal Averaging Methods:
-    1. --temporal_factor: Simple integer factor (e.g., 6 for 1H->6H)
+    Temporal Processing Methods:
+    1. --temporal_factor: Simple integer factor WITH AVERAGING (e.g., 6 for 1H->6H averaged)
         - Requires evenly spaced input times
-        - Uses xarray.coarsen() method
+        - Uses xarray.coarsen() method with mean()
         - Works well when input starts at standard hours (0, 6, 12, 18)
     
-    2. --target_hours: Resample to specific hours (e.g., 0 6 12 18)
+    2. --target_hours: Resample to specific hours WITH AVERAGING (e.g., 0 6 12 18)
         - Works with ANY input time structure
-        - Uses xarray.resample() method
+        - Uses xarray.resample() method with mean()
         - Preferred when input times don't align with standard hours
+    
+    3. --time_subsample_factor: Subsample WITHOUT AVERAGING (e.g., 3 for every 3rd timestep)
+        - Selects every Nth timestep using isel(time=slice(None, None, N))
+        - No averaging performed - preserves instantaneous values
+        - Ideal for instantaneous data like snapshots or diagnostic output
             """
     )
     
     # Required arguments
-    parser.add_argument('input_zarr',
-                        help='Path to input HEALPix Zarr file (highest zoom level)')
+    # parser.add_argument('input_zarr',
+    #                     help='Path to input HEALPix Zarr file (highest zoom level)')
+    # parser.add_argument("-c", "--config", help="yaml config file for datasets", required=True)
+    # parser.add_argument("--source", help="catalog source name from config file", required=True)
     
     # Optional arguments
-    parser.add_argument('--output_dir', '-o',
-                        help='Output directory for coarsened files. If not specified, '
-                             'uses same directory as input file.')
+    # parser.add_argument('--output_dir', '-o',
+    #                     help='Output directory for coarsened files. If not specified, '
+    #                          'uses same directory as input file.')
     
     parser.add_argument('--target_zoom', '-z', type=int, default=0,
                         help='Target zoom level to coarsen down to (default: 0)')
     
     parser.add_argument('--temporal_factor', '-t', type=int, default=1,
-                        help='Temporal coarsening factor (default: 1, no temporal coarsening). '
+                        help='Temporal coarsening factor WITH AVERAGING (default: 1, no temporal coarsening). '
                              'E.g., 3 for 1H->3H, 6 for 1H->6H, 24 for 1H->1D. '
                              'Note: This requires evenly spaced times. '
-                             'Ignored if --target_hours is specified.')
+                             'Ignored if --target_hours or --time_subsample_factor is specified.')
     
     parser.add_argument('--target_hours', type=int, nargs='+',
-                        help='Specific hours of day to align output to (e.g., 0 6 12 18 for 6-hourly). '
+                        help='Specific hours of day to align output to WITH AVERAGING (e.g., 0 6 12 18 for 6-hourly). '
                              'This method works with any input time structure and uses xarray.resample(). '
-                             'If specified, --temporal_factor is ignored.')
+                             'If specified, --time_subsample_factor and --temporal_factor are ignored.')
+    
+    parser.add_argument('--time_subsample_factor', type=int, default=1,
+                        help='Temporal subsampling factor WITHOUT AVERAGING (default: 1, no subsampling). '
+                             'Selects every Nth timestep. E.g., 3 for selecting every 3rd hour (1H->3H instantaneous). '
+                             'Useful for instantaneous data where averaging is not appropriate. '
+                             'Ignored if --target_hours is specified. Takes precedence over --temporal_factor.')
     
     parser.add_argument('--time_chunk_size', type=int, default=24,
                         help='Chunk size for time dimension in output (default: 24)')
@@ -577,11 +689,6 @@ def parse_arguments():
     parser.add_argument('--config', '-c',
                         help='Path to YAML configuration file for compression settings. '
                              'If not provided, uses default compression (zstd, level 3)')
-    
-    parser.add_argument('--direct-coarsen', action='store_true',
-                        help='Coarsen directly from start_zoom to target_zoom in one step, '
-                             'skipping intermediate zoom levels. Faster but only creates the target level. '
-                             'Default behavior is sequential coarsening through all intermediate levels.')
     
     parser.add_argument('--overwrite', action='store_true',
                         help='Overwrite existing output files')
@@ -620,48 +727,113 @@ def main():
     else:
         logger.info("Using default compression settings (no config file provided)")
     
-    # Validate input file path
-    input_path = Path(args.input_zarr)
-    if not input_path.is_absolute():
-        # If relative path, resolve from current directory
-        input_path = Path.cwd() / args.input_zarr
+    # # Validate input file path
+    # input_path = Path(args.input_zarr)
+    # if not input_path.is_absolute():
+    #     # If relative path, resolve from current directory
+    #     input_path = Path.cwd() / args.input_zarr
     
-    if not input_path.exists():
-        logger.error(f"Input file not found: {input_path}")
-        sys.exit(1)
+    # if not input_path.exists():
+    #     logger.error(f"Input file not found: {input_path}")
+    #     sys.exit(1)
     
-    logger.info(f"Input file: {input_path}")
-    logger.info(f"Target zoom level: {args.target_zoom}")
-    
+    # logger.info(f"Input file: {input_path}")
+    # logger.info(f"Target zoom level: {args.target_zoom}")
+
+    # Load configuration for the specified source
+    # config_file = args.config
+    # catalog_source = args.source
+    # config = load_config(config_file, catalog_source)
+
+    catalog_file = "https://digital-earths-global-hackathon.github.io/catalog/catalog.yaml"
+    catalog_location = "online"
+    catalog_source = "ifs_tco3999_rcbmf"
+    catalog_params = {
+        "zoom": 11,
+        "time": "PT1H",
+    }
+    input_zoom = catalog_params['zoom']
+
+    output_dir = "/pscratch/sd/w/wcmca1/hackathon/healpix/ifs_tco3999_rcbmf/"
+
+    # Dictionary mapping input variable names to standard output names
+    varout_dict = {
+        'time': 'time', 
+        'lat': 'lat', 
+        'lon': 'lon', 
+        'crs': 'crs',
+        'level': 'lev', 
+        'value': 'cell',
+        'u': 'ua', 
+        'v': 'va', 
+        'q': 'hus',
+        'tp': 'pr', 
+        'lsp': 'prs', 
+        'sp': 'ps', 
+        'msl': 'psl', 
+        '10u': 'uas', 
+        '10v': 'vas',
+        'z': 'z', 
+        't': 'ta', 
+        '2t': 'tas', 
+        'ttr': 'rlut',
+        # 'orog': 'ELEV', 
+        # 'sfcWind': 'sfcWind', 
+        # 'zg': 'zg', 
+    }
+
+    # Load the HEALPix catalog
+    print(f"Loading HEALPix catalog: {catalog_file}")
+    in_catalog = intake.open_catalog(catalog_file)
+    if catalog_location:
+        in_catalog = in_catalog[catalog_location]
+
+    # Get the DataSet from the catalog
+    logger.info(f"Loading source: {catalog_source}")
+    ds = in_catalog[catalog_source](**catalog_params).to_dask()
+    logger.info(f"Dataset loaded: {ds.sizes}")
+    logger.info(f"Variables: {list(ds.data_vars)}")
+
+    # Subset variables and rename
+    if varout_dict is not None:
+        logger.info(f"Subsetting and renaming variables...")
+        ds = ds[list(varout_dict.keys())]
+        ds = ds.rename(varout_dict)
+        logger.info(f"Variables after subsetting: {list(ds.data_vars)}")
+    # import pdb; pdb.set_trace()
+
     # Log temporal processing options
     if args.target_hours:
-        logger.info(f"Temporal resampling: target hours = {args.target_hours}")
+        logger.info(f"Temporal resampling WITH AVERAGING: target hours = {args.target_hours}")
         logger.info(f"  (Using xarray.resample() method - works with any time structure)")
+    elif args.time_subsample_factor > 1:
+        logger.info(f"Temporal subsampling WITHOUT AVERAGING: factor = {args.time_subsample_factor}")
+        logger.info(f"  (Selecting every {args.time_subsample_factor} timestep)")
     elif args.temporal_factor > 1:
-        logger.info(f"Temporal coarsening factor: {args.temporal_factor}")
+        logger.info(f"Temporal coarsening WITH AVERAGING: factor = {args.temporal_factor}")
         logger.info(f"  (Using coarsen() method - requires evenly spaced times)")
     else:
-        logger.info(f"No temporal averaging (temporal_factor=1)")
+        logger.info(f"No temporal processing")
     
     logger.info(f"Time chunk size: {args.time_chunk_size}")
-    logger.info(f"Coarsening mode: {'DIRECT' if args.direct_coarsen else 'SEQUENTIAL'}")
     logger.info(f"Overwrite existing files: {args.overwrite}")
-    if args.output_dir:
-        logger.info(f"Output directory: {args.output_dir}")
-    else:
-        logger.info(f"Output directory: same as input ({input_path.parent})")
+    # if args.output_dir:
+    #     logger.info(f"Output directory: {args.output_dir}")
+    # else:
+    #     logger.info(f"Output directory: same as input ({input_path.parent})")
     
     try:
         # Run the coarsening process
         coarsen_healpix_data(
-            input_zarr=str(input_path),
-            output_dir=args.output_dir,
+            ds=ds,
+            start_zoom=input_zoom,
+            output_dir=output_dir,
             target_zoom=args.target_zoom,
             temporal_factor=args.temporal_factor,
             target_hours=args.target_hours,
+            time_subsample_factor=args.time_subsample_factor,
             time_chunk_size=args.time_chunk_size,
             compression_config=compression_config,
-            direct_coarsen=args.direct_coarsen,
             overwrite=args.overwrite
         )
         

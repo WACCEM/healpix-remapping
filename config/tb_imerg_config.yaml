@@ -18,7 +18,7 @@ file_glob: "merg_*.nc"         # Glob pattern to match files (merg_*.nc)
 # Processing parameters  
 default_zoom: 9
 time_chunk_size: 24  # 1 day worth of 1-hour data (balance memory vs parallelism)
-time_average: null  # Options: null (no averaging), "1h" (1-hour), "3h", "6h", "1d" (daily), etc.
+time_average: 6h  # Options: null (no averaging), "1h" (1-hour), "3h", "6h", "1d" (daily), etc.
 convert_time: True   # Convert cftime.DatetimeJulian to standard datetime64 for pandas compatibility
 
 # Spatial dimension configuration (OPTIONAL)
