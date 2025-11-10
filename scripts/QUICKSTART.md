@@ -11,14 +11,14 @@ mkdir -p logs
 # 2. Generate task list and submit job array (uses shared queue, max 2 concurrent)
 python submit_daily_coarsen_jobs.py \
     --start_date 2020-01-01 \
-    --end_date 2020-12-31 \
+    --end_date 2021-03-01 \
     --target_zoom 8 \
     --time_subsample_factor 3 \
     --max_concurrent 2
 
 # 3. Monitor progress
 squeue -u $USER
-python check_daily_progress.py --start_date 2020-01-01 --end_date 2020-12-31
+python check_daily_progress.py --start_date 2020-01-01 --end_date 2021-03-01
 ```
 
 ## What This Does
@@ -71,7 +71,7 @@ See [REMOTE_DATA_NOTES.md](REMOTE_DATA_NOTES.md) for detailed analysis.
 squeue -j <JobID>
 
 # Check progress
-python check_daily_progress.py --start_date 2020-01-01 --end_date 2020-12-31
+python check_daily_progress.py --start_date 2020-01-01 --end_date 2021-03-01
 
 # View logs
 tail -f logs/coarsen_*_1.out   # First task
@@ -97,13 +97,13 @@ python submit_daily_coarsen_jobs.py \
 # Change concurrent tasks (not recommended to go above 2 for remote data)
 python submit_daily_coarsen_jobs.py \
     --start_date 2020-01-01 \
-    --end_date 2020-12-31 \
+    --end_date 2021-03-01 \
     --max_concurrent 2
 
 # Just generate task list (no submission)
 python submit_daily_coarsen_jobs.py \
     --start_date 2020-01-01 \
-    --end_date 2020-12-31 \
+    --end_date 2021-03-01 \
     --generate_only
 ```
 

@@ -6,17 +6,17 @@ This script creates a task list file where each line represents one day of proce
 then submits a single SLURM job array to process all days in parallel.
 
 Usage:
-    python submit_daily_coarsen_jobs.py --start_date 2020-01-01 --end_date 2020-12-31 [options]
+    python submit_daily_coarsen_jobs.py --start_date 2020-01-01 --end_date 2021-03-01 [options]
     
 Examples:
     # Generate task list and submit job array for full year 2020
-    python submit_daily_coarsen_jobs.py --start_date 2020-01-01 --end_date 2020-12-31
+    python submit_daily_coarsen_jobs.py --start_date 2020-01-01 --end_date 2021-03-01
     
     # Only generate task list without submitting (for review)
-    python submit_daily_coarsen_jobs.py --start_date 2020-01-01 --end_date 2020-12-31 --generate_only
+    python submit_daily_coarsen_jobs.py --start_date 2020-01-01 --end_date 2021-03-01 --generate_only
     
     # Process with custom parameters and throttle to 2 simultaneous jobs (recommended for remote data)
-    python submit_daily_coarsen_jobs.py --start_date 2020-01-01 --end_date 2020-12-31 \
+    python submit_daily_coarsen_jobs.py --start_date 2020-01-01 --end_date 2021-03-01 \
         --target_zoom 8 --time_subsample_factor 3 --max_concurrent 2
 """
 

@@ -21,7 +21,7 @@
 #
 # Usage:
 #   # First generate the task list:
-#   python submit_daily_coarsen_jobs.py --start_date 2020-01-01 --end_date 2020-12-31 --generate_only
+#   python submit_daily_coarsen_jobs.py --start_date 2020-01-01 --end_date 2021-03-01 --generate_only
 #
 #   # Then submit the job array:
 #   sbatch slurm_coarsen_daily.sh

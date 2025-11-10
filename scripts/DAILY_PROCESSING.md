@@ -52,7 +52,7 @@ mkdir -p logs
 # Generate task list and submit job array
 python submit_daily_coarsen_jobs.py \
     --start_date 2020-01-01 \
-    --end_date 2020-12-31 \
+    --end_date 2021-03-01 \
     --target_zoom 8 \
     --time_subsample_factor 3 \
     --max_concurrent 2
@@ -72,7 +72,7 @@ squeue -j <JobID>
 # Check which days are complete
 python check_daily_progress.py \
     --start_date 2020-01-01 \
-    --end_date 2020-12-31
+    --end_date 2021-03-01
 ```
 
 ## Configuration Options
@@ -129,7 +129,7 @@ sbatch --array=1-31%2 slurm_coarsen_daily.sh  # 31 days, max 2 concurrent (recom
 # Submit all 366 days (max 2 concurrent for remote data stability)
 python submit_daily_coarsen_jobs.py \
     --start_date 2020-01-01 \
-    --end_date 2020-12-31 \
+    --end_date 2021-03-01 \
     --target_zoom 8 \
     --time_subsample_factor 3 \
     --max_concurrent 2
@@ -153,7 +153,7 @@ python submit_daily_coarsen_jobs.py \
 # Review task list before submitting
 python submit_daily_coarsen_jobs.py \
     --start_date 2020-01-01 \
-    --end_date 2020-12-31 \
+    --end_date 2021-03-01 \
     --generate_only
 
 # Review the generated task list
@@ -169,7 +169,7 @@ sbatch slurm_coarsen_daily.sh
 # If tasks need more than 2 hours
 python submit_daily_coarsen_jobs.py \
     --start_date 2020-01-01 \
-    --end_date 2020-12-31 \
+    --end_date 2021-03-01 \
     --time_limit 04:00:00  # 4 hours per task
 ```
 
@@ -179,7 +179,7 @@ python submit_daily_coarsen_jobs.py \
 # Find failed dates
 python check_daily_progress.py \
     --start_date 2020-01-01 \
-    --end_date 2020-12-31 \
+    --end_date 2021-03-01 \
     --generate_resubmit
 
 # This will show commands to resubmit specific date ranges
@@ -260,18 +260,18 @@ Each daily job creates a Zarr file:
 # See which days completed successfully
 python check_daily_progress.py \
     --start_date 2020-01-01 \
-    --end_date 2020-12-31
+    --end_date 2021-03-01
 
 # Show complete files too
 python check_daily_progress.py \
     --start_date 2020-01-01 \
-    --end_date 2020-12-31 \
+    --end_date 2021-03-01 \
     --show_complete
 
 # Generate resubmit commands for failed dates
 python check_daily_progress.py \
     --start_date 2020-01-01 \
-    --end_date 2020-12-31 \
+    --end_date 2021-03-01 \
     --generate_resubmit
 ```
 
@@ -328,7 +328,7 @@ Method 2: Use check_daily_progress.py
 # Get resubmit commands
 python check_daily_progress.py \
     --start_date 2020-01-01 \
-    --end_date 2020-12-31 \
+    --end_date 2021-03-01 \
     --generate_resubmit
 
 # Follow the generated commands
