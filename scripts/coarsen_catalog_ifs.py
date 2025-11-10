@@ -1,31 +1,30 @@
 #!/usr/bin/env python3
 """
-Coarsen HEALPix data to lower zoom levels.
+Coarsen IFS HEALPix data to lower zoom level.
 
-This script takes processed HEALPix data at a high zoom level and 
-progressively coarsens it to all lower zoom levels (down to zoom 0).
-Each coarsening step reduces the resolution by a factor of 4 (2^2).
+This script coarsens IFS HEALPix data from zoom level 11 and 
+coarsens it to a specified lower zoom level (e.g., zoom 8).
 
-Works with any HEALPix Zarr dataset.
+Written specifically for IFS data from the online catalog.
 
 Usage:
-    python coarsen_healpix.py INPUT_ZARR [options]
+    python coarsen_catalog_ifs.py [options]
     
 Examples:
     # Coarsen from zoom 9 down to zoom 5, output to same directory as input
-    python coarsen_healpix.py IMERG_V7_1H_zoom9_20200101_20200131.zarr --target_zoom 5
+    python coarsen_catalog_ifs.py IMERG_V7_1H_zoom9_20200101_20200131.zarr --target_zoom 5
     
     # Coarsen to zoom 0, specify output directory
-    python coarsen_healpix.py data.zarr --output_dir /path/to/output
+    python coarsen_catalog_ifs.py data.zarr --output_dir /path/to/output
     
     # Apply temporal coarsening (1H -> 6H) using simple factor method
-    python coarsen_healpix.py data.zarr --temporal_factor 6 --target_zoom 7
+    python coarsen_catalog_ifs.py data.zarr --temporal_factor 6 --target_zoom 8
     
     # Apply temporal resampling to specific hours (works with any input times)
-    python coarsen_healpix.py data.zarr --target_hours 0 6 12 18 --target_zoom 7
+    python coarsen_catalog_ifs.py data.zarr --target_hours 0 6 12 18 --target_zoom 8
     
     # Use custom compression settings from config file
-    python coarsen_healpix.py data.zarr --config my_config.yaml
+    python coarsen_catalog_ifs.py data.zarr --config my_config.yaml
 """
 
 import sys
@@ -280,6 +279,66 @@ def apply_temporal_subsampling(ds, file_info, subsample_factor):
     return ds_subsampled, file_info
 
 
+def subset_by_date_range(ds, start_date=None, end_date=None):
+    """
+    Subset dataset by date range.
+    
+    Parameters:
+    -----------
+    ds : xr.Dataset
+        Input dataset with time dimension
+    start_date : str, optional
+        Start date (format: 'YYYY-MM-DD' or 'YYYYMMDD')
+    end_date : str, optional
+        End date (format: 'YYYY-MM-DD' or 'YYYYMMDD')
+        
+    Returns:
+    --------
+    xr.Dataset : Subsetted dataset
+    """
+    if start_date is None and end_date is None:
+        return ds
+    
+    logger.info(f"📅 Subsetting by date range...")
+    logger.info(f"   Original time range: {ds.time.min().dt.strftime('%Y-%m-%d').item()} to {ds.time.max().dt.strftime('%Y-%m-%d').item()}")
+    logger.info(f"   Original time dimension: {ds.sizes['time']} timesteps")
+    
+    # Parse dates (handle both YYYY-MM-DD and YYYYMMDD formats)
+    def parse_date(date_str):
+        if date_str is None:
+            return None
+        # Remove hyphens if present
+        date_str = date_str.replace('-', '')
+        # Parse as YYYYMMDD
+        return pd.to_datetime(date_str, format='%Y%m%d')
+    
+    start_dt = parse_date(start_date)
+    end_dt = parse_date(end_date)
+    
+    # For end_date, set to 23:59:59 to include the full day but exclude the next day's 00:00
+    if end_dt is not None:
+        end_dt = end_dt + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    
+    # Build selection string
+    if start_dt is not None and end_dt is not None:
+        logger.info(f"   Selecting: {start_dt.strftime('%Y-%m-%d')} to {end_dt.strftime('%Y-%m-%d %H:%M:%S')} (inclusive, excludes next day's 00:00)")
+        ds_subset = ds.sel(time=slice(start_dt, end_dt))
+    elif start_dt is not None:
+        logger.info(f"   Selecting: from {start_dt.strftime('%Y-%m-%d')} onwards")
+        ds_subset = ds.sel(time=slice(start_dt, None))
+    elif end_dt is not None:
+        logger.info(f"   Selecting: up to {end_dt.strftime('%Y-%m-%d %H:%M:%S')} (inclusive, excludes next day's 00:00)")
+        ds_subset = ds.sel(time=slice(None, end_dt))
+    
+    logger.info(f"   After subsetting: {ds_subset.sizes['time']} timesteps")
+    if ds_subset.sizes['time'] > 0:
+        logger.info(f"   New time range: {ds_subset.time.min().dt.strftime('%Y-%m-%d').item()} to {ds_subset.time.max().dt.strftime('%Y-%m-%d').item()}")
+    else:
+        logger.warning(f"   ⚠️  No data found in specified date range!")
+    
+    return ds_subset
+
+
 def apply_temporal_averaging(ds, file_info, temporal_factor=1, target_hours=None):
     """
     Apply temporal averaging to dataset using either resample or coarsen method.
@@ -449,14 +508,6 @@ def coarsen_healpix_data(ds, start_zoom, output_dir, target_zoom=0, temporal_fac
         Whether to overwrite existing files (default: False)
     """
     
-    # # Extract information from input filename
-    # input_path = Path(input_zarr)
-    # if not input_path.exists():
-    #     raise FileNotFoundError(f"Input file not found: {input_zarr}")
-    
-    # file_info = extract_info_from_filename(input_path.name)
-    # start_zoom = file_info['zoom']
-    
     # logger.info(f"Processing: {input_path.name}")
     logger.info(f"Starting zoom level: {start_zoom}")
     logger.info(f"Target zoom level: {target_zoom}")
@@ -465,13 +516,6 @@ def coarsen_healpix_data(ds, start_zoom, output_dir, target_zoom=0, temporal_fac
         logger.warning(f"Start zoom ({start_zoom}) must be higher than target zoom ({target_zoom})")
         return
     
-    # # Load the highest resolution dataset
-    # logger.info(f"Loading dataset from: {input_zarr}")
-    # ds = xr.open_zarr(input_zarr)
-    # logger.info(f"Dataset loaded: {ds.sizes}")
-    # logger.info(f"Variables: {list(ds.data_vars)}")
-
-
     # Get start and end dates from time coordinate
     start_date = ds.time.min().dt.strftime('%Y%m%d').item()
     end_date = ds.time.max().dt.strftime('%Y%m%d').item()
@@ -617,22 +661,22 @@ def parse_arguments():
         epilog="""
     Examples:
     # Coarsen from zoom 9 down to zoom 5
-    %(prog)s IMERG_V7_1H_zoom9_20200101_20200131.zarr --target_zoom 5
+    %(prog)s --target_zoom 5
     
     # Coarsen to zoom 0, specify output directory
-    %(prog)s /path/to/data.zarr --output_dir /path/to/output
+    %(prog)s --output_dir /path/to/output
     
     # Apply temporal coarsening (1H -> 6H) using simple factor method WITH AVERAGING
-    %(prog)s data.zarr --temporal_factor 6 --target_zoom 7
+    %(prog)s --temporal_factor 6 --target_zoom 7
     
     # Subsample time (1H -> 3H) WITHOUT AVERAGING (for instantaneous data)
-    %(prog)s data.zarr --time_subsample_factor 3 --target_zoom 7
+    %(prog)s --time_subsample_factor 3 --target_zoom 7
     
     # Resample to specific hours (more flexible, works with any input times) WITH AVERAGING
-    %(prog)s data.zarr --target_hours 0 6 12 18 --target_zoom 7
+    %(prog)s --target_hours 0 6 12 18 --target_zoom 7
     
     # Use custom compression settings from config file
-    %(prog)s data.zarr --config my_config.yaml --overwrite
+    %(prog)s --config my_config.yaml --overwrite
 
     Temporal Processing Methods:
     1. --temporal_factor: Simple integer factor WITH AVERAGING (e.g., 6 for 1H->6H averaged)
@@ -653,16 +697,8 @@ def parse_arguments():
     )
     
     # Required arguments
-    # parser.add_argument('input_zarr',
-    #                     help='Path to input HEALPix Zarr file (highest zoom level)')
-    # parser.add_argument("-c", "--config", help="yaml config file for datasets", required=True)
-    # parser.add_argument("--source", help="catalog source name from config file", required=True)
     
-    # Optional arguments
-    # parser.add_argument('--output_dir', '-o',
-    #                     help='Output directory for coarsened files. If not specified, '
-    #                          'uses same directory as input file.')
-    
+    # Optional arguments   
     parser.add_argument('--target_zoom', '-z', type=int, default=0,
                         help='Target zoom level to coarsen down to (default: 0)')
     
@@ -692,6 +728,14 @@ def parse_arguments():
     
     parser.add_argument('--overwrite', action='store_true',
                         help='Overwrite existing output files')
+    
+    parser.add_argument('--start_date', type=str,
+                        help='Start date for time subsetting (format: YYYY-MM-DD or YYYYMMDD). '
+                             'If specified, only process data from this date onwards.')
+    
+    parser.add_argument('--end_date', type=str,
+                        help='End date for time subsetting (format: YYYY-MM-DD or YYYYMMDD). '
+                             'If specified, only process data up to and including this date.')
     
     return parser.parse_args()
 
@@ -726,25 +770,8 @@ def main():
             sys.exit(1)
     else:
         logger.info("Using default compression settings (no config file provided)")
-    
-    # # Validate input file path
-    # input_path = Path(args.input_zarr)
-    # if not input_path.is_absolute():
-    #     # If relative path, resolve from current directory
-    #     input_path = Path.cwd() / args.input_zarr
-    
-    # if not input_path.exists():
-    #     logger.error(f"Input file not found: {input_path}")
-    #     sys.exit(1)
-    
-    # logger.info(f"Input file: {input_path}")
-    # logger.info(f"Target zoom level: {args.target_zoom}")
 
-    # Load configuration for the specified source
-    # config_file = args.config
-    # catalog_source = args.source
-    # config = load_config(config_file, catalog_source)
-
+    # Specify catalog information
     catalog_file = "https://digital-earths-global-hackathon.github.io/catalog/catalog.yaml"
     catalog_location = "online"
     catalog_source = "ifs_tco3999_rcbmf"
@@ -754,6 +781,7 @@ def main():
     }
     input_zoom = catalog_params['zoom']
 
+    # Specify output directory
     output_dir = "/pscratch/sd/w/wcmca1/hackathon/healpix/ifs_tco3999_rcbmf/"
 
     # Dictionary mapping input variable names to standard output names
@@ -764,22 +792,27 @@ def main():
         'crs': 'crs',
         'level': 'lev', 
         'value': 'cell',
-        'u': 'ua', 
-        'v': 'va', 
-        'q': 'hus',
-        'tp': 'pr', 
-        'lsp': 'prs', 
-        'sp': 'ps', 
-        'msl': 'psl', 
-        '10u': 'uas', 
-        '10v': 'vas',
-        'z': 'z', 
-        't': 'ta', 
-        '2t': 'tas', 
-        'ttr': 'rlut',
-        # 'orog': 'ELEV', 
-        # 'sfcWind': 'sfcWind', 
-        # 'zg': 'zg', 
+        'u': 'ua',                  # zonal wind
+        'v': 'va',                  # meridional wind
+        'w': 'omega',               # vertical velocity (pressure velocity)
+        'z': 'z',                   # geopotential
+        't': 'ta',                  # temperature
+        'q': 'hus',                 # specific humidity
+        'r': 'hur',                 # relative humidity
+        'tp': 'pr',                 # total precipitation
+        'tcwv': 'prw',              # precipitable water vapor
+        'sp': 'ps',                 # surface pressure
+        'msl': 'psl',               # mean sea level pressure
+        '10u': 'uas',               # 10m u wind
+        '10v': 'vas',               # 10m v wind
+        '2t': 'tas',                # 2m temperature
+        'ttr': 'rlut',              # TOA outgoing longwave radiation
+        'slhf': 'hflsd',            # surface latent heat flux
+        'sshf': 'hflsu',            # surface sensible heat flux
+        # 'lsp': 'prs',             # large scale precipitation (not consistent with other models)
+        # 'orog': 'ELEV',           # NOT available
+        # 'sfcWind': 'sfcWind',     # NOT available
+        # 'zg': 'zg',               # NOT available
     }
 
     # Load the HEALPix catalog
@@ -800,7 +833,15 @@ def main():
         ds = ds[list(varout_dict.keys())]
         ds = ds.rename(varout_dict)
         logger.info(f"Variables after subsetting: {list(ds.data_vars)}")
-    # import pdb; pdb.set_trace()
+    
+    # Apply date range subsetting if requested (before any other processing)
+    if args.start_date or args.end_date:
+        ds = subset_by_date_range(ds, args.start_date, args.end_date)
+        if ds.sizes['time'] == 0:
+            logger.error("No data in specified date range. Exiting.")
+            sys.exit(1)
+    
+    import pdb; pdb.set_trace()
 
     # Log temporal processing options
     if args.target_hours:
@@ -817,10 +858,6 @@ def main():
     
     logger.info(f"Time chunk size: {args.time_chunk_size}")
     logger.info(f"Overwrite existing files: {args.overwrite}")
-    # if args.output_dir:
-    #     logger.info(f"Output directory: {args.output_dir}")
-    # else:
-    #     logger.info(f"Output directory: same as input ({input_path.parent})")
     
     try:
         # Run the coarsening process
