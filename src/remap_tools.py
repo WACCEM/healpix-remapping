@@ -51,7 +51,7 @@ def load_weights(weights_file):
 
 
 def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='auto', 
-                lon_name='lon', lat_name='lat'):
+                x_coordname='lon', y_coordname='lat'):
     """
     Generate or load optimized remapping weights for spatial coordinates to HEALPix.
     
@@ -71,9 +71,9 @@ def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='
         - 'latlon_1d': Regular lat/lon with 1D coordinates (requires meshgrid)
         - 'latlon_2d': Curvilinear grid with 2D lat/lon arrays
         - 'unstructured': Unstructured grid with 1D coordinate per cell (e.g., E3SM, SCREAM)
-    lon_name : str, default='lon'
+    x_coordname : str, default='lon'
         Name of longitude coordinate variable
-    lat_name : str, default='lat'
+    y_coordname : str, default='lat'
         Name of latitude coordinate variable
         
     Returns:
@@ -99,8 +99,8 @@ def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='
     )
     
     # Get lon/lat coordinates using configurable names
-    lon_coord = ds[lon_name]
-    lat_coord = ds[lat_name]
+    lon_coord = ds[x_coordname]
+    lat_coord = ds[y_coordname]
     
     # Auto-detect grid type if not specified
     if grid_type == 'auto':
@@ -117,7 +117,7 @@ def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='
             grid_type = 'latlon_2d'
             logger.info("  Detected: 2D lat/lon grid (curvilinear)")
         else:
-            raise ValueError(f"Cannot auto-detect grid type: {lon_name}.ndim={lon_coord.ndim}, {lat_name}.ndim={lat_coord.ndim}")
+            raise ValueError(f"Cannot auto-detect grid type: {x_coordname}.ndim={lon_coord.ndim}, {y_coordname}.ndim={lat_coord.ndim}")
     else:
         logger.info(f"Using specified grid type: {grid_type}")
     
@@ -234,8 +234,8 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -
         - x_dimname: Name of x spatial dimension (e.g., 'lon', 'west_east')
         - y_dimname: Name of y spatial dimension (e.g., 'lat', 'south_north')
         - spatial_dimensions: Dict of spatial dimension names with chunk sizes
-        - lon_name: Name of longitude coordinate variable (default: 'lon')
-        - lat_name: Name of latitude coordinate variable (default: 'lat')
+        - x_coordname: Name of longitude coordinate variable (default: 'lon')
+        - y_coordname: Name of latitude coordinate variable (default: 'lat')
         
         Note: For 2D grids, MUST specify both x_dimname and y_dimname to avoid ambiguity.
               For 1D unstructured grids, only x_dimname is used (y_dimname will be None).
@@ -264,8 +264,8 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -
         'grid_type': 'latlon_2d',
         'x_dimname': 'west_east',
         'y_dimname': 'south_north',
-        'lon_name': 'XLONG',
-        'lat_name': 'XLAT',
+        'x_coordname': 'XLONG',
+        'y_coordname': 'XLAT',
         'spatial_dimensions': {'west_east': -1, 'south_north': -1}
     }
     ds_remap = remap_delaunay(ds, zoom=9, weights_file='weights.nc', config=config)
@@ -292,8 +292,8 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -
     spatial_dimensions = config.get('spatial_dimensions', None)
     
     # Get coordinate names with defaults
-    lon_name = config.get('lon_name', 'lon')
-    lat_name = config.get('lat_name', 'lat')
+    x_coordname = config.get('x_coordname', 'lon')
+    y_coordname = config.get('y_coordname', 'lat')
     
     # Get explicit dimension names from config (preferred method)
     x_dimname = config.get('x_dimname', None)
@@ -341,7 +341,7 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -
     
     logger.info(f"Starting HEALPix remapping (zoom level {order})")
     logger.info(f"Dataset: {dict(ds.sizes)}, Variables: {list(ds.data_vars)}")
-    logger.info(f"Coordinate names: lon='{lon_name}', lat='{lat_name}'")
+    logger.info(f"Coordinate names: lon='{x_coordname}', lat='{y_coordname}'")
     logger.info(f"Dimension names: x='{x_dimname}', y='{y_dimname}'")
     
     # Helper function to check if variable matches skip pattern
@@ -365,7 +365,7 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -
         return False
     
     weights = gen_weights(ds, order, weights_file, force_recompute, grid_type, 
-                         lon_name=lon_name, lat_name=lat_name)
+                         x_coordname=x_coordname, y_coordname=y_coordname)
     npix = len(weights.tgt_idx)
     
     # Calculate spatial size based on grid type and dimension names
@@ -374,8 +374,8 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -
         spatial_size = ds.sizes[x_dimname]
     else:
         # Structured grid - product of two dimensions
-        lat_coord = ds[lat_name] if lat_name in ds else ds[y_dimname]
-        lon_coord = ds[lon_name] if lon_name in ds else ds[x_dimname]
+        lat_coord = ds[y_coordname] if y_coordname in ds else ds[y_dimname]
+        lon_coord = ds[x_coordname] if x_coordname in ds else ds[x_dimname]
         spatial_size = len(lat_coord) * len(lon_coord)
     
     logger.info(f"Weights loaded: {npix} target pixels, source spatial size: {spatial_size}")
@@ -454,8 +454,8 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -
             data_array = data_array.chunk({'spatial': -1})
             
             # Validate spatial dimensions
-            lat_coord = ds[lat_name] if lat_name in ds else ds[y_dimname]
-            lon_coord = ds[lon_name] if lon_name in ds else ds[x_dimname]
+            lat_coord = ds[y_coordname] if y_coordname in ds else ds[y_dimname]
+            lon_coord = ds[x_coordname] if x_coordname in ds else ds[x_dimname]
             expected_spatial_size = len(lat_coord) * len(lon_coord)
             actual_spatial_size = data_array.sizes['spatial']
             if expected_spatial_size != actual_spatial_size:

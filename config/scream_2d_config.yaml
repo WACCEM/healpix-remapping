@@ -30,15 +30,45 @@ grid_type: 'unstructured'  # SCREAM uses unstructured grid with ncol dimension
 # For unstructured grids (E3SM/SCREAM), only x_dimname is needed
 x_dimname: ncol      # Single spatial dimension for unstructured grid
 
+# Coordinate variable names (if different from dimension names) 
+x_coordname: lon      # Name of longitude coordinate variable
+y_coordname: lat      # Name of latitude coordinate variable
+
 # Spatial chunking specification
 spatial_dimensions:
   ncol: -1   # -1 means no chunking (keep full dimension)
 
 # Examples for different grid types:
-#   IMERG/IR_IMERG: {lat: -1, lon: -1}
-#   ERA5: {latitude: -1, longitude: -1}
-#   E3SM: {ncol: -1}
-#   CMIP6: {lat: -1, lon: -1} or {latitude: -1, longitude: -1} (varies by model)
+#
+# Standard IMERG/IR_IMERG (lat/lon grid):
+#   x_dimname: lon
+#   y_dimname: lat
+#   spatial_dimensions:
+#     lon: -1
+#     lat: -1
+#
+# WRF output (custom dimension and coordinate names):
+#   x_dimname: west_east
+#   y_dimname: south_north
+#   x_coordname: XLONG        # WRF uses XLONG for longitude coordinate
+#   y_coordname: XLAT         # WRF uses XLAT for latitude coordinate
+#   spatial_dimensions:
+#     west_east: -1
+#     south_north: -1
+#
+# E3SM/SCREAM (unstructured grid):
+#   x_dimname: ncol           # Only x_dimname needed for unstructured grids
+#   spatial_dimensions:
+#     ncol: -1
+#
+# CMIP6 (varies by model):
+#   x_dimname: i              # or 'lon', 'x', depending on model
+#   y_dimname: j              # or 'lat', 'y', depending on model
+#   x_coordname: longitude    # or 'lon', 'LONGITUDE'
+#   y_coordname: latitude     # or 'lat', 'LATITUDE'
+#   spatial_dimensions:
+#     i: -1
+#     j: -1
 
 # Time dimension configuration (OPTIONAL)
 # Name of the time/concatenation dimension (default: 'time')
