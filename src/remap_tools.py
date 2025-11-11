@@ -3,6 +3,7 @@ import xarray as xr
 import healpy as hp
 import easygems.remap as egr
 from pathlib import Path
+import fnmatch
 import logging
 
 # Configure logging to ensure output appears in terminal
@@ -49,14 +50,15 @@ def load_weights(weights_file):
     return weights
 
 
-def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='auto'):
+def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='auto', 
+                lon_name='lon', lat_name='lat'):
     """
-    Generate or load optimized remapping weights for lat/lon to HEALPix.
+    Generate or load optimized remapping weights for spatial coordinates to HEALPix.
     
     Parameters:
     -----------
     ds : xr.Dataset
-        Input dataset with lat/lon coordinates
+        Input dataset with spatial coordinates
     order : int
         HEALPix order (zoom level)
     weights_file : str, optional
@@ -69,6 +71,10 @@ def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='
         - 'latlon_1d': Regular lat/lon with 1D coordinates (requires meshgrid)
         - 'latlon_2d': Curvilinear grid with 2D lat/lon arrays
         - 'unstructured': Unstructured grid with 1D coordinate per cell (e.g., E3SM, SCREAM)
+    lon_name : str, default='lon'
+        Name of longitude coordinate variable
+    lat_name : str, default='lat'
+        Name of latitude coordinate variable
         
     Returns:
     --------
@@ -92,10 +98,14 @@ def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='
         nside=nside, ipix=np.arange(npix), lonlat=True, nest=True
     )
     
+    # Get lon/lat coordinates using configurable names
+    lon_coord = ds[lon_name]
+    lat_coord = ds[lat_name]
+    
     # Auto-detect grid type if not specified
     if grid_type == 'auto':
         logger.info("Auto-detecting grid type from coordinate dimensions...")
-        if ds.lon.ndim == 1 and ds.lat.ndim == 1:
+        if lon_coord.ndim == 1 and lat_coord.ndim == 1:
             # Check for unstructured grid indicators
             if 'ncol' in ds.dims or 'cell' in ds.dims:
                 grid_type = 'unstructured'
@@ -103,11 +113,11 @@ def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='
             else:
                 grid_type = 'latlon_1d'
                 logger.info("  Detected: regular 1D lat/lon grid")
-        elif ds.lon.ndim == 2 and ds.lat.ndim == 2:
+        elif lon_coord.ndim == 2 and lat_coord.ndim == 2:
             grid_type = 'latlon_2d'
             logger.info("  Detected: 2D lat/lon grid (curvilinear)")
         else:
-            raise ValueError(f"Cannot auto-detect grid type: lon.ndim={ds.lon.ndim}, lat.ndim={ds.lat.ndim}")
+            raise ValueError(f"Cannot auto-detect grid type: {lon_name}.ndim={lon_coord.ndim}, {lat_name}.ndim={lat_coord.ndim}")
     else:
         logger.info(f"Using specified grid type: {grid_type}")
     
@@ -115,23 +125,23 @@ def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='
     if grid_type == 'latlon_1d':
         # Regular lat/lon grid with 1D coordinates - create meshgrid
         logger.info("Processing regular 1D lat/lon grid (creating meshgrid)...")
-        lon_2d, lat_2d = np.meshgrid(ds.lon.values, ds.lat.values)
+        lon_2d, lat_2d = np.meshgrid(lon_coord.values, lat_coord.values)
         source_lon = lon_2d.flatten()
         source_lat = lat_2d.flatten()
-        source_shape = f"{len(ds.lat)} x {len(ds.lon)}"
+        source_shape = f"{len(lat_coord)} x {len(lon_coord)}"
         
     elif grid_type == 'latlon_2d':
         # 2D curvilinear coordinates - just flatten
         logger.info("Processing 2D lat/lon grid (curvilinear, flattening)...")
-        source_lon = ds.lon.values.flatten()
-        source_lat = ds.lat.values.flatten()
-        source_shape = f"{ds.lon.shape[0]} x {ds.lon.shape[1]}"
+        source_lon = lon_coord.values.flatten()
+        source_lat = lat_coord.values.flatten()
+        source_shape = f"{lon_coord.shape[0]} x {lon_coord.shape[1]}"
         
     elif grid_type == 'unstructured':
         # Unstructured grid - coordinates already 1D per cell
         logger.info("Processing unstructured grid (1D coordinates per cell)...")
-        source_lon = ds.lon.values
-        source_lat = ds.lat.values
+        source_lon = lon_coord.values
+        source_lat = lat_coord.values
         
         # Validate that we have matching dimensions
         if len(source_lon) != len(source_lat):
@@ -203,43 +213,142 @@ def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='
     return weights
 
 
-def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, force_recompute=False, grid_type='auto',
-                   skip_variables=None, required_dimensions=None) -> xr.Dataset:
+def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -> xr.Dataset:
     """
     Remap dataset to HEALPix using Delaunay triangulation with weight caching support.
-    Expects lat/lon coordinates and remaps spatial variables.
     
     Parameters:
     -----------
     ds : xr.Dataset
-        Input dataset with lat/lon coordinates
+        Input dataset with spatial coordinates
     order : int
         HEALPix order (zoom level)
     weights_file : str, optional
         Path to weights file for caching
-    force_recompute : bool, default=False
-        If True, recompute weights even if weights_file exists
-    grid_type : str, default='auto'
-        Type of input grid ('auto', 'latlon_1d', 'latlon_2d', 'unstructured')
-    skip_variables : list, optional
-        List of variable name patterns to skip (supports wildcards like '*_bounds')
-    required_dimensions : list of lists, optional
-        List of required dimension combinations (e.g., [['time', 'ncol']])
-        Only variables with these dimensions will be processed
+    config : dict, optional
+        Configuration dictionary containing remapping parameters:
+        - force_recompute: Force recompute weights (default: False)
+        - grid_type: Grid type ('auto', 'latlon_1d', 'latlon_2d', 'unstructured')
+        - skip_variables: List of variable patterns to skip
+        - required_dimensions: List of required dimension combinations
+        - x_dimname: Name of x spatial dimension (e.g., 'lon', 'west_east')
+        - y_dimname: Name of y spatial dimension (e.g., 'lat', 'south_north')
+        - spatial_dimensions: Dict of spatial dimension names with chunk sizes
+        - lon_name: Name of longitude coordinate variable (default: 'lon')
+        - lat_name: Name of latitude coordinate variable (default: 'lat')
+        
+        Note: For 2D grids, MUST specify both x_dimname and y_dimname to avoid ambiguity.
+              For 1D unstructured grids, only x_dimname is used (y_dimname will be None).
     
     Returns:
     --------
     xr.Dataset : Remapped dataset with HEALPix grid
+    
+    Examples:
+    ---------
+    # Standard lat/lon grid (uses defaults)
+    config = {'grid_type': 'latlon_1d'}
+    ds_remap = remap_delaunay(ds, zoom=9, weights_file='weights.nc', config=config)
+    
+    # Standard lat/lon grid (explicit dimension names)
+    config = {
+        'grid_type': 'latlon_1d',
+        'x_dimname': 'lon',
+        'y_dimname': 'lat',
+        'spatial_dimensions': {'lon': -1, 'lat': -1}
+    }
+    ds_remap = remap_delaunay(ds, zoom=9, weights_file='weights.nc', config=config)
+    
+    # WRF grid with custom dimension and coordinate names
+    config = {
+        'grid_type': 'latlon_2d',
+        'x_dimname': 'west_east',
+        'y_dimname': 'south_north',
+        'lon_name': 'XLONG',
+        'lat_name': 'XLAT',
+        'spatial_dimensions': {'west_east': -1, 'south_north': -1}
+    }
+    ds_remap = remap_delaunay(ds, zoom=9, weights_file='weights.nc', config=config)
+    
+    # Unstructured grid (E3SM/SCREAM) - only x_dimname needed
+    config = {
+        'grid_type': 'unstructured',
+        'x_dimname': 'ncol',
+        'spatial_dimensions': {'ncol': -1},
+        'skip_variables': ['*_bounds', 'time_bnds'],
+        'required_dimensions': [['time', 'ncol']]
+    }
+    ds_remap = remap_delaunay(ds, zoom=9, weights_file='weights.nc', config=config)
     """
+    
+    # Extract parameters from config with defaults
+    if config is None:
+        config = {}
+    
+    force_recompute = config.get('force_recompute', False)
+    grid_type = config.get('grid_type', 'auto')
+    skip_variables = config.get('skip_variables', None)
+    required_dimensions = config.get('required_dimensions', None)
+    spatial_dimensions = config.get('spatial_dimensions', None)
+    
+    # Get coordinate names with defaults
+    lon_name = config.get('lon_name', 'lon')
+    lat_name = config.get('lat_name', 'lat')
+    
+    # Get explicit dimension names from config (preferred method)
+    x_dimname = config.get('x_dimname', None)
+    y_dimname = config.get('y_dimname', None)
+    
+    # Determine spatial dimension names from config
+    if x_dimname is not None and y_dimname is not None:
+        # User explicitly specified x and y dimension names (preferred)
+        logger.info(f"Using explicit dimension names from config: x='{x_dimname}', y='{y_dimname}'")
+        
+        # Validate that these dimensions exist in spatial_dimensions if specified
+        if spatial_dimensions:
+            if x_dimname not in spatial_dimensions or y_dimname not in spatial_dimensions:
+                raise ValueError(f"Dimension names x='{x_dimname}', y='{y_dimname}' must be in spatial_dimensions: {list(spatial_dimensions.keys())}")
+    
+    elif spatial_dimensions:
+        # User specified spatial dimensions but not explicit x/y names
+        # This is ambiguous and error-prone - raise informative error
+        spatial_dim_names = list(spatial_dimensions.keys())
+        
+        if len(spatial_dim_names) == 1:
+            # Unstructured grid - single spatial dimension
+            x_dimname = spatial_dim_names[0]
+            y_dimname = None
+            logger.info(f"Single spatial dimension detected (unstructured grid): '{x_dimname}'")
+        elif len(spatial_dim_names) == 2:
+            # Ambiguous! Require explicit x_dimname and y_dimname
+            raise ValueError(
+                f"Ambiguous spatial dimension order: {spatial_dim_names}\n"
+                f"Please explicitly specify x_dimname and y_dimname in config.\n"
+                f"Example:\n"
+                f"  x_dimname: '{spatial_dim_names[0]}'\n"
+                f"  y_dimname: '{spatial_dim_names[1]}'\n"
+                f"  spatial_dimensions:\n"
+                f"    {spatial_dim_names[0]}: -1\n"
+                f"    {spatial_dim_names[1]}: -1"
+            )
+        else:
+            raise ValueError(f"spatial_dimensions must have 1 or 2 dimensions, got {len(spatial_dim_names)}")
+    else:
+        # No spatial_dimensions specified - use standard defaults
+        x_dimname = 'lon'
+        y_dimname = 'lat'
+        logger.info(f"No spatial_dimensions or explicit dimension names specified, using defaults: x='lon', y='lat'")
+    
     logger.info(f"Starting HEALPix remapping (zoom level {order})")
     logger.info(f"Dataset: {dict(ds.sizes)}, Variables: {list(ds.data_vars)}")
+    logger.info(f"Coordinate names: lon='{lon_name}', lat='{lat_name}'")
+    logger.info(f"Dimension names: x='{x_dimname}', y='{y_dimname}'")
     
     # Helper function to check if variable matches skip pattern
     def should_skip_variable(var_name, skip_patterns):
         """Check if variable name matches any skip pattern (supports wildcards)."""
         if skip_patterns is None:
             return False
-        import fnmatch
         for pattern in skip_patterns:
             if fnmatch.fnmatch(var_name, pattern):
                 return True
@@ -255,10 +364,21 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, force_recomput
                 return True
         return False
     
-    weights = gen_weights(ds, order, weights_file, force_recompute, grid_type)
+    weights = gen_weights(ds, order, weights_file, force_recompute, grid_type, 
+                         lon_name=lon_name, lat_name=lat_name)
     npix = len(weights.tgt_idx)
     
-    logger.info(f"Weights loaded: {npix} target pixels, spatial size: {len(ds.lat) * len(ds.lon)}")
+    # Calculate spatial size based on grid type and dimension names
+    if y_dimname is None:
+        # Unstructured grid - single spatial dimension
+        spatial_size = ds.sizes[x_dimname]
+    else:
+        # Structured grid - product of two dimensions
+        lat_coord = ds[lat_name] if lat_name in ds else ds[y_dimname]
+        lon_coord = ds[lon_name] if lon_name in ds else ds[x_dimname]
+        spatial_size = len(lat_coord) * len(lon_coord)
+    
+    logger.info(f"Weights loaded: {npix} target pixels, source spatial size: {spatial_size}")
     
     # Remap variables with spatial dimensions
     remapped_vars = {}
@@ -288,18 +408,15 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, force_recomput
         spatial_dims = []
         
         if detected_grid_type == 'unstructured':
-            # For unstructured grids, look for ncol or cell dimension
-            if 'ncol' in data_array.dims:
+            # For unstructured grids, look for the configured spatial dimension
+            if x_dimname in data_array.dims:
                 has_spatial = True
-                spatial_dims = ['ncol']
-            elif 'cell' in data_array.dims:
-                has_spatial = True
-                spatial_dims = ['cell']
+                spatial_dims = [x_dimname]
         else:
-            # For regular/curvilinear grids, look for lat/lon dimensions
-            if 'lat' in data_array.dims and 'lon' in data_array.dims:
+            # For regular/curvilinear grids, look for both x and y dimensions
+            if x_dimname in data_array.dims and y_dimname in data_array.dims:
                 has_spatial = True
-                spatial_dims = ['lat', 'lon']
+                spatial_dims = [y_dimname, x_dimname]  # [lat/south_north, lon/west_east]
         
         # Only process variables with spatial dimensions
         if not has_spatial:
@@ -322,20 +439,24 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, force_recomput
                 raise ValueError(f"Spatial size mismatch for {var_name}: expected {expected_spatial_size}, got {actual_spatial_size}")
             
         else:
-            # Regular or curvilinear grid - need to stack lat/lon
-            # Handle dimension order - transpose if needed
-            if list(data_array.dims) == ['time', 'lon', 'lat']:
-                data_array = data_array.transpose('time', 'lat', 'lon')
+            # Regular or curvilinear grid - need to stack spatial dimensions
+            # Handle dimension order - transpose if needed to have (time, y, x) order
+            expected_order = ['time', y_dimname, x_dimname]
+            if list(data_array.dims) == ['time', x_dimname, y_dimname]:
+                data_array = data_array.transpose('time', y_dimname, x_dimname)
+                logger.info(f"  Transposed dimensions from ['time', '{x_dimname}', '{y_dimname}'] to {expected_order}")
             
             # Stack spatial dimensions for remapping
-            data_array = data_array.stack(spatial=('lat', 'lon'))
+            data_array = data_array.stack(spatial=(y_dimname, x_dimname))
             spatial_dim_name = 'spatial'
             
             # Ensure spatial dimension is in a single chunk for remapping
             data_array = data_array.chunk({'spatial': -1})
             
             # Validate spatial dimensions
-            expected_spatial_size = len(ds.lat) * len(ds.lon)
+            lat_coord = ds[lat_name] if lat_name in ds else ds[y_dimname]
+            lon_coord = ds[lon_name] if lon_name in ds else ds[x_dimname]
+            expected_spatial_size = len(lat_coord) * len(lon_coord)
             actual_spatial_size = data_array.sizes['spatial']
             if expected_spatial_size != actual_spatial_size:
                 raise ValueError(f"Spatial size mismatch for {var_name}: expected {expected_spatial_size}, got {actual_spatial_size}")
@@ -413,7 +534,7 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, force_recomput
         'healpix_npix': npix,
         'healpix_nest': True,
         'grid_mapping': 'crs',
-        'original_grid': 'regular_lat_lon',
+        'original_grid': detected_grid_type,
         'remapping_method': 'delaunay_triangulation'
     })
     

@@ -20,6 +20,56 @@ default_zoom: 9
 time_chunk_size: 24  # 1 day worth of 1-hour data (balance memory vs parallelism)
 time_average: "1h"  # Options: null (no averaging), "1h" (1-hour), "3h", "6h", "1d" (daily), etc.
 convert_time: True   # Convert cftime.DatetimeJulian to standard datetime64 for pandas compatibility
+
+# Spatial dimension configuration
+# IMPORTANT: For 2D grids, explicitly specify both x_dimname and y_dimname to avoid ambiguity
+# These define which dimensions represent the spatial axes in your data
+x_dimname: lon           # Name of x spatial dimension (longitude)
+y_dimname: lat           # Name of y spatial dimension (latitude)
+
+# Spatial chunking specification
+# Use -1 for no chunking (keep full dimension in memory - recommended for remapping)
+spatial_dimensions:
+  lon: -1   # Full longitude dimension in single chunk
+  lat: -1   # Full latitude dimension in single chunk
+
+# Coordinate variable names (if different from dimension names)
+# Uncomment and modify if your dataset uses different coordinate variable names
+# lon_name: lon          # Name of longitude coordinate variable
+# lat_name: lat          # Name of latitude coordinate variable
+
+# Examples for different grid types:
+# 
+# Standard IMERG (lat/lon grid):
+#   x_dimname: lon
+#   y_dimname: lat
+#   spatial_dimensions:
+#     lon: -1
+#     lat: -1
+#
+# WRF output (custom dimension names):
+#   x_dimname: west_east
+#   y_dimname: south_north
+#   lon_name: XLONG        # WRF uses XLONG for longitude coordinate
+#   lat_name: XLAT         # WRF uses XLAT for latitude coordinate
+#   spatial_dimensions:
+#     west_east: -1
+#     south_north: -1
+#
+# E3SM/SCREAM (unstructured grid):
+#   x_dimname: ncol        # Only x_dimname needed for unstructured grids
+#   spatial_dimensions:
+#     ncol: -1
+#
+# CMIP6 (varies by model):
+#   x_dimname: i           # or 'lon', 'x', depending on model
+#   y_dimname: j           # or 'lat', 'y', depending on model
+#   lon_name: longitude    # or 'lon', 'LONGITUDE'
+#   lat_name: latitude     # or 'lat', 'LATITUDE'
+#   spatial_dimensions:
+#     i: -1
+#     j: -1
+
 # Note: spatial_chunk_size is automatically computed based on zoom level using chunk_tools.compute_chunksize()
 force_recompute: False    # Force recompute weight file even if it exists
 

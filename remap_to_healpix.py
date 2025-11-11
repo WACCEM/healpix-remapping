@@ -321,8 +321,8 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
         step_start = time.time()
         logger.info(f"Remapping to HEALPix zoom level {zoom}")
         
-        ds_remap = remap_tools.remap_delaunay(ds, zoom, weights_file, force_recompute, grid_type,
-                                              skip_variables, required_dimensions)
+        # Pass config dictionary to remap_delaunay for flexible parameter handling
+        ds_remap = remap_tools.remap_delaunay(ds, zoom, weights_file, config=config)
         step_time = time.time() - step_start
         logger.info(f"✅ Step 3 completed in {step_time:.1f} seconds")
 

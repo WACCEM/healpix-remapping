@@ -9,8 +9,8 @@ Usage:
     python launch_scream_processing.py <start_date> <end_date> [zoom_level] [--overwrite]
 
 Examples:
-    python launch_scream_processing.py 2020-01-01 2020-12-31 9
-    python launch_scream_processing.py 2020-01-01 2020-01-31 9 --overwrite
+    python launch_scream_processing.py 2019-08-01 2020-09-01 9
+    python launch_scream_processing.py 2019-08-01 2020-09-01 9 --overwrite
 
 Configuration:
     Edit config/scream_2d_config.yaml to configure:
@@ -37,21 +37,16 @@ def load_config(config_path):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python launch_scream_processing.py <start_date> <end_date> [zoom_level] [--overwrite] [--time-subset=00min|30min]")
+        print("Usage: python launch_scream_processing.py <start_date> <end_date> [zoom_level] [--overwrite]")
         print("\nDate formats:")
         print("  YYYY-MM-DD       - Date only (end_date extends to 23:59:59)")
         print("  YYYY-MM-DDTHH    - Date with hour (end_date extends to HH:59:59)")
         print("  YYYY-MM-DD HH    - Date with hour, space separated")
-        # print("\nTime subsetting (optional):")
-        # print("  --time-subset=00min  - Keep only times at ~00 minutes (e.g., 00:00, 01:00, 02:00)")
-        # print("  --time-subset=30min  - Keep only times at ~30 minutes (e.g., 00:30, 01:30, 02:30)")
-        # print("  (Useful when hourly-averaged data is stored at 30-min intervals - reduces output by 50%)")
         print("\nExamples:")
-        print("  python launch_scream_processing.py 2020-01-01 2020-12-31 9")
-        print("  python launch_scream_processing.py 2020-01-01T00 2020-01-03T23 9")
-        print("  python launch_scream_processing.py '2020-01-01 00' '2020-01-03 23' 9")
-        print("  python launch_scream_processing.py 2020-01-01 2020-12-31 9 --overwrite")
-        # print("  python launch_scream_processing.py 2020-01-01 2020-12-31 9 --time-subset=00min")
+        print("  python launch_scream_processing.py 2019-08-01 2020-09-01 9")
+        print("  python launch_scream_processing.py 2019-08-01T00 2020-09-01T23 9")
+        print("  python launch_scream_processing.py '2019-08-01 00' '2020-09-01 23' 9")
+        print("  python launch_scream_processing.py 2019-08-01 2020-09-01 9 --overwrite")
         sys.exit(1)
     
     # Parse command line arguments
@@ -65,20 +60,11 @@ def main():
     # Parse zoom level and options
     zoom = None
     overwrite = True
-    # time_subset = '00min'  # Default to 00min subsetting
     
     # Process remaining arguments
     for arg in sys.argv[3:]:
         if arg == '--overwrite':
             overwrite = True
-        # elif arg.startswith('--time-subset'):
-        #     if '=' in arg:
-        #         time_subset = arg.split('=')[1]
-        #     else:
-        #         time_subset = '00min'  # Default to 00min when flag is used without value
-        #     if time_subset not in ['00min', '30min']:
-        #         print(f"Error: Invalid time-subset value '{time_subset}'. Must be '00min' or '30min'")
-        #         sys.exit(1)
         else:
             try:
                 zoom = int(arg)

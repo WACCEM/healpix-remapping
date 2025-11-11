@@ -168,30 +168,18 @@ def main():
         preprocessing_kwargs = {'time_subset': time_subset}
         print(f"✨ Using flexible preprocessing: subset_time_by_minute with time_subset='{time_subset}'")
     
-    # Run the processing with new flexible preprocessing approach
+    # Run the processing with config dictionary
     process_to_healpix_zarr(
         start_date=start_date,
         end_date=end_date,
         zoom=zoom,
         output_zarr=output_file,
         weights_file=weights_file,
-        time_chunk_size=config['time_chunk_size'],
-        input_base_dir=config['input_base_dir'],
-        spatial_chunks=spatial_dimensions,  # Pass from config or None for auto-detection
-        concat_dim=concat_dim,  # Pass time dimension name from config
         overwrite=overwrite,
         time_average=time_average,
-        convert_time=config.get('convert_time', False),
-        dask_config=config.get('dask', {}),
-        force_recompute=config.get('force_recompute', False),
-        # File search pattern parameters
-        date_pattern=date_pattern,
-        date_format=date_format,
-        use_year_subdirs=use_year_subdirs,
-        file_glob=file_glob,
-        # New flexible preprocessing approach
         preprocessing_func=preprocessing_func,
         preprocessing_kwargs=preprocessing_kwargs,
+        config=config,  # Pass entire config dictionary
     )
     
     print(f"\n✅ Processing completed successfully!")

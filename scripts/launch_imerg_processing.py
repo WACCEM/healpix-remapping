@@ -107,20 +107,16 @@ def main():
     # Create weights file path (use pathlib to handle extra slashes)
     weights_file = str(Path(config['weights_dir']) / f"imerg_v07b_to_healpix_z{zoom}_weights.nc")
     
-    # Run the processing (using backward-compatible function name)
+    # Run the processing with config dictionary
     process_to_healpix_zarr(
         start_date=start_date,
         end_date=end_date,
         zoom=zoom,
         output_zarr=output_file,
         weights_file=weights_file,
-        time_chunk_size=config['time_chunk_size'],
-        input_base_dir=config['input_base_dir'],
         overwrite=overwrite,
         time_average=time_average,
-        convert_time=config.get('convert_time', False),
-        dask_config=config.get('dask', {}),
-        force_recompute=config.get('force_recompute', False),
+        config=config,  # Pass entire config dictionary
     )
     
     print(f"\nProcessing completed successfully!")
