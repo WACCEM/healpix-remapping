@@ -11,20 +11,18 @@ Usage:
     python coarsen_catalog_ifs.py [options]
     
 Examples:
-    # Coarsen from zoom 9 down to zoom 5, output to same directory as input
-    python coarsen_catalog_ifs.py IMERG_V7_1H_zoom9_20200101_20200131.zarr --target_zoom 5
+    # Coarsen from zoom 11 down to zoom 8, output to same directory as input
+    python coarsen_catalog_ifs.py --target_zoom 8
     
-    # Coarsen to zoom 0, specify output directory
-    python coarsen_catalog_ifs.py data.zarr --output_dir /path/to/output
-    
-    # Apply temporal coarsening (1H -> 6H) using simple factor method
-    python coarsen_catalog_ifs.py data.zarr --temporal_factor 6 --target_zoom 8
+    # Apply temporal coarsening (1H -> 3H) using simple factor method
+    python coarsen_catalog_ifs.py --temporal_factor 3 --target_zoom 8
     
     # Apply temporal resampling to specific hours (works with any input times)
-    python coarsen_catalog_ifs.py data.zarr --target_hours 0 6 12 18 --target_zoom 8
+    python coarsen_catalog_ifs.py --target_hours 0 6 12 18 --target_zoom 8
     
-    # Use custom compression settings from config file
-    python coarsen_catalog_ifs.py data.zarr --config my_config.yaml
+    # Apply coarsening to specific date range
+    python coarsen_catalog_ifs.py --start_date 2020-01-11 --end_date 2020-01-12 \
+        --temporal_factor 3 --target_zoom 8 --overwrite
 """
 
 import os
