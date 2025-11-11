@@ -27,6 +27,7 @@ Examples:
     python coarsen_catalog_ifs.py data.zarr --config my_config.yaml
 """
 
+import os
 import sys
 import argparse
 import yaml
@@ -596,8 +597,9 @@ def coarsen_healpix_data(ds, start_zoom, output_dir, target_zoom=0, temporal_fac
         'coarsened_from_zoom': start_zoom,
         'coarsening_method': 'mean',
         'coarsening_factor': coarsen_factor,
+        'processing_script': os.path.basename(__file__),
         'processing_timestamp': datetime.now().isoformat(),
-        'source_catalog': f"{file_info['base_name']}_zoom{start_zoom}"
+        'source_catalog': f"{file_info['base_name']}_zoom{start_zoom}",
     }
     
     # Add temporal processing info if applicable
