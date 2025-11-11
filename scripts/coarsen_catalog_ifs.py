@@ -21,8 +21,8 @@ Examples:
     python coarsen_catalog_ifs.py --target_hours 0 6 12 18 --target_zoom 8
     
     # Apply coarsening to specific date range
-    python coarsen_catalog_ifs.py --start_date 2020-01-11 --end_date 2020-01-12 \
-        --temporal_factor 3 --target_zoom 8 --overwrite
+    python coarsen_catalog_ifs.py --start_date 2020-01-11 --end_date 2021-03-01 \
+        --target_zoom 8 --temporal_factor 3 --overwrite
 """
 
 import os
