@@ -231,7 +231,7 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -
         - grid_type: Grid type ('auto', 'latlon_1d', 'latlon_2d', 'unstructured')
         - skip_variables: List of variable patterns to skip
         - required_dimensions: List of required dimension combinations
-        - x_dimname: Name of x spatial dimension (e.g., 'lon', 'west_east')
+        - x_dimname: Name of x spatial dimension (e.g., 'lon', 'west_east', 'ncol')
         - y_dimname: Name of y spatial dimension (e.g., 'lat', 'south_north')
         - spatial_dimensions: Dict of spatial dimension names with chunk sizes
         - x_coordname: Name of longitude coordinate variable (default: 'lon')
@@ -239,6 +239,10 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -
         
         Note: For 2D grids, MUST specify both x_dimname and y_dimname to avoid ambiguity.
               For 1D unstructured grids, only x_dimname is used (y_dimname will be None).
+              
+        Note: Vertical dimensions (e.g., 'lev', 'ilev') are automatically detected and preserved
+              in the remapped output. The code handles both 2D (time, spatial) and 3D 
+              (time, spatial, vertical) variables transparently.
     
     Returns:
     --------
@@ -279,6 +283,17 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -
         'required_dimensions': [['time', 'ncol']]
     }
     ds_remap = remap_delaunay(ds, zoom=9, weights_file='weights.nc', config=config)
+    
+    # Unstructured grid with 3D variables (e.g., SCREAM with vertical levels)
+    config = {
+        'grid_type': 'unstructured',
+        'x_dimname': 'ncol',
+        'spatial_dimensions': {'ncol': -1},
+        'skip_variables': ['*_bounds', 'time_bnds', 'hyai', 'hyam', 'hybi', 'hybm'],
+        'required_dimensions': [['time', 'ncol'], ['time', 'ncol', 'lev']]
+    }
+    ds_remap = remap_delaunay(ds, zoom=9, weights_file='weights.nc', config=config)
+    # Variables like qv(time, ncol, lev) become qv(time, cell, lev) with lev preserved
     """
     
     # Extract parameters from config with defaults
@@ -290,6 +305,7 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -
     skip_variables = config.get('skip_variables', None)
     required_dimensions = config.get('required_dimensions', None)
     spatial_dimensions = config.get('spatial_dimensions', None)
+    passthrough_variables = config.get('passthrough_variables', [])
     
     # Get coordinate names with defaults
     x_coordname = config.get('x_coordname', 'lon')
@@ -424,6 +440,14 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -
         
         logger.info(f"Processing variable '{var_name}': {data_array.shape} {data_array.dims}")
         
+        # Identify non-spatial, non-time dimensions (e.g., vertical levels)
+        orig_data_array = ds[var_name]
+        other_dims = [dim for dim in orig_data_array.dims if dim not in ['time', x_dimname, y_dimname]]
+        other_coords = {dim: orig_data_array.coords[dim] for dim in other_dims if dim in orig_data_array.coords}
+        
+        logger.info(f"  Other dimensions (non-spatial, non-time): {other_dims}")
+        logger.info(f"  Original dimension order: {list(data_array.dims)}")
+        
         # Handle different grid structures
         if detected_grid_type == 'unstructured':
             # Unstructured grid - spatial dimension is already 1D
@@ -462,54 +486,61 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -
                 raise ValueError(f"Spatial size mismatch for {var_name}: expected {expected_spatial_size}, got {actual_spatial_size}")
         
         # Apply remapping with Dask for parallel processing
-        logger.info("Applying remapping with Dask parallel processing...")
+        # Following the notebook pattern: use vectorize=True to automatically handle
+        # all non-spatial dimensions (time, lev, etc.)
+        logger.info("Applying remapping with Dask parallel processing (vectorize approach)...")
         
-        # Compute weights to numpy arrays for use in parallel function
-        weights_computed = {var: weights[var].values for var in weights.data_vars}
-        
-        # Apply weights using xr.apply_ufunc with proper Dask handling
-        def apply_weights_with_time(data_chunk):
-            """Apply weights to a data chunk, handling time dimension properly."""
-            # Ensure data is numpy array
-            if hasattr(data_chunk, 'values'):
-                data_chunk = data_chunk.values
-            
-            if data_chunk.ndim == 2:  # (time, spatial)
-                # Process each time step
-                remapped_list = []
-                for t in range(data_chunk.shape[0]):
-                    time_slice = data_chunk[t, :]  # Shape: (spatial,)
-                    remapped_time = egr.apply_weights(time_slice, **weights_computed)
-                    remapped_list.append(remapped_time)
-                return np.stack(remapped_list, axis=0)  # Shape: (time, npix)
-            else:  # 1D spatial data
-                return egr.apply_weights(data_chunk, **weights_computed)
-        
-        # Use xr.apply_ufunc for Dask-compatible processing
+        # Use xr.apply_ufunc with vectorize=True
+        # This tells xarray to automatically apply the function over all non-core dimensions
+        # For 2D data (time, ncol): applies to each time step → (time, cell)
+        # For 3D data (time, ncol, lev): applies to each (time, lev) combo → (time, cell, lev)
         remapped_data = xr.apply_ufunc(
-            apply_weights_with_time,
+            egr.apply_weights,
             data_array,
+            kwargs=weights,
+            keep_attrs=True,
             input_core_dims=[[spatial_dim_name]],
             output_core_dims=[['cell']],
-            dask='parallelized',  # Use parallelized to handle complex operations
-            output_dtypes=[data_array.dtype],
+            output_dtypes=['f4'],
+            vectorize=True,  # KEY: Let xarray handle dimension iteration automatically
+            dask='parallelized',
             dask_gufunc_kwargs={'output_sizes': {'cell': npix}},
         )
         
         logger.info(f"Remapped data shape: {remapped_data.shape}")
+        logger.info(f"Remapped data dimensions: {remapped_data.dims}")
         
-        # Create new DataArray with proper coordinates
-        # Get the original data_array reference from ds (not the modified version)
-        orig_data_array = ds[var_name]
-        remapped_vars[var_name] = xr.DataArray(
-            remapped_data,
-            dims=['time', 'cell'],
-            coords={
-                'time': orig_data_array.coords['time'],
-                'cell': np.arange(npix)
-            },
-            attrs=orig_data_array.attrs
-        )
+        # With vectorize=True, xarray automatically handles dimension ordering
+        # The output will have dimensions in the order: [non-core-dims..., core-dims...]
+        # For 2D: (time, cell)
+        # For 3D: (time, lev, cell) - but we want (time, cell, lev)
+        
+        # Transpose to get (time, cell, other_dims...) order if needed
+        if other_dims:
+            # Expected order: ['time', 'cell'] + other_dims
+            expected_dims = ['time', 'cell'] + other_dims
+            if list(remapped_data.dims) != expected_dims:
+                logger.info(f"  Transposing from {list(remapped_data.dims)} to {expected_dims}")
+                remapped_data = remapped_data.transpose(*expected_dims)
+        
+        # Add cell coordinate (remapped_data already has correct dimensions)
+        remapped_data = remapped_data.assign_coords(cell=np.arange(npix))
+        
+        # Store in remapped_vars dict
+        remapped_vars[var_name] = remapped_data
+    
+    # Add passthrough variables (non-remapped, e.g., 1D vertical coordinates)
+    if passthrough_variables:
+        logger.info(f"Adding {len(passthrough_variables)} passthrough variable(s): {passthrough_variables}")
+        for var_name in passthrough_variables:
+            if var_name in ds.data_vars:
+                logger.info(f"  Including passthrough variable '{var_name}': {ds[var_name].dims}")
+                remapped_vars[var_name] = ds[var_name]
+            elif var_name in ds.coords:
+                logger.info(f"  Including passthrough coordinate '{var_name}': {ds[var_name].dims}")
+                remapped_vars[var_name] = ds[var_name]
+            else:
+                logger.warning(f"  Passthrough variable '{var_name}' not found in dataset")
     
     # Create remapped dataset
     ds_remap = xr.Dataset(remapped_vars)

@@ -329,21 +329,42 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
         logger.info(f"Remapped dataset: {ds_remap.sizes}")
         logger.info(f"Variables: {list(ds_remap.data_vars)}")
         
-        # Apply variable renaming if requested
+        # Apply variable subsetting and renaming if requested
         if var_rename_map:
-            logger.info("🔄 Step 3b: Renaming variables...")
+            logger.info("🔄 Step 3b: Subsetting and renaming variables...")
             step_start = time.time()
-            renamed_vars = []
-            for old_name, new_name in var_rename_map.items():
-                if old_name in ds_remap.data_vars:
-                    ds_remap = ds_remap.rename({old_name: new_name})
-                    renamed_vars.append(f"{old_name} → {new_name}")
-                    logger.info(f"   Renamed: {old_name} → {new_name}")
-                else:
-                    logger.warning(f"   Variable '{old_name}' not found in dataset, skipping rename")
-            step_time = time.time() - step_start
-            logger.info(f"✅ Step 3b completed in {step_time:.1f} seconds ({len(renamed_vars)} variable(s) renamed)")
-            logger.info(f"Updated variables: {list(ds_remap.data_vars)}")
+            
+            # Subset dataset to include variables in var_rename_map + passthrough variables
+            # This automatically includes coordinate variables (time, cell, lev, etc.)
+            vars_to_keep = [var for var in var_rename_map.keys() if var in ds_remap.data_vars]
+            
+            # Also keep passthrough variables (non-remapped variables like vertical coordinates)
+            passthrough_variables = config.get('passthrough_variables', [])
+            if passthrough_variables:
+                passthrough_to_keep = [var for var in passthrough_variables if var in ds_remap.data_vars]
+                vars_to_keep.extend(passthrough_to_keep)
+                if passthrough_to_keep:
+                    logger.info(f"   Including {len(passthrough_to_keep)} passthrough variable(s): {passthrough_to_keep}")
+            
+            if not vars_to_keep:
+                logger.warning(f"   None of the variables in var_rename_map found in dataset")
+                logger.warning(f"   Requested: {list(var_rename_map.keys())}")
+                logger.warning(f"   Available: {list(ds_remap.data_vars)}")
+            else:
+                logger.info(f"   Subsetting to {len(vars_to_keep)} variable(s): {vars_to_keep}")
+                ds_remap = ds_remap[vars_to_keep]
+                
+                # Rename the subsetted variables (but not passthrough variables)
+                renamed_vars = []
+                for old_name, new_name in var_rename_map.items():
+                    if old_name in ds_remap.data_vars:
+                        ds_remap = ds_remap.rename({old_name: new_name})
+                        renamed_vars.append(f"{old_name} → {new_name}")
+                        logger.info(f"   Renamed: {old_name} → {new_name}")
+                
+                step_time = time.time() - step_start
+                logger.info(f"✅ Step 3b completed in {step_time:.1f} seconds ({len(renamed_vars)} variable(s) processed)")
+                logger.info(f"Updated variables: {list(ds_remap.data_vars)}")
 
         # Write to Zarr with optimal chunking and monitoring
         logger.info("🔄 Step 4: Writing to Zarr...")

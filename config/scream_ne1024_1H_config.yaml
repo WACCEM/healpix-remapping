@@ -1,71 +1,80 @@
-# IMERG to HEALPix Processing Configuration
+# SCREAM to HEALPix Processing Configuration
 # Optimized for NERSC Perlmutter (128-core, 512GB RAM compute nodes)
 
 # Data paths
-input_base_dir: "/pscratch/sd/w/wcmca1/GPM/IR_IMERG_Combined_V07B/"
-output_base_dir: "/pscratch/sd/w/wcmca1/GPM/healpix/test/"
-output_basename: "IR_IMERG_V7"
-weights_dir: "/pscratch/sd/w/wcmca1/GPM/weights/"
+input_base_dir: "/global/cfs/cdirs/e3sm/beydoun/ne1024pg2_ne1024pg2.F2010-SCREAMv1.10022025.CESS2.P0K.n2048.2/run/"
+output_base_dir: "/pscratch/sd/w/wcmca1/hackathon/healpix/scream_cess2/"
+output_basename: "SCREAMv1"
+
+# Weights file configuration
+# Option 1: Specify exact weights file (recommended for multi-resolution datasets)
+weights_file: "/pscratch/sd/w/wcmca1/hackathon/healpix/scream_cess2/weights/scream_ne1024pg2_to_healpix_z9_weights.nc"
 
 # File search pattern configuration
 # These parameters control how files are discovered and filtered by date
-# Filename format: merg_YYYYMMDDhh_10km-pixel.nc (e.g., merg_2020010100_10km-pixel.nc)
-date_pattern: "_(\\d{10})_"    # Regex to extract YYYYMMDDhh (10 digits between underscores)
-date_format: "%Y%m%d%H"        # strptime format: YYYY=year, MM=month, DD=day, HH=hour
-use_year_subdirs: true         # Files organized in yearly subdirectories (YYYY/)
-file_glob: "merg_*.nc"         # Glob pattern to match files (merg_*.nc)
+# Filename format: 1hi.INSTANT.nhours_x1.YYYY-MM-DD-xxxxx.nc (e.g., 1hi.INSTANT.nhours_x1.2019-08-01-00000.nc)
+date_pattern: "\\.(\\d{4}-\\d{2}-\\d{2})-"   # Regex to extract YYYY-MM-DD
+date_format: "%Y-%m-%d"        # strptime format: YYYY=year, MM=month, DD=day
+use_year_subdirs: False         # Files organized in yearly subdirectories (YYYY/)
+file_glob: "1hi.INSTANT.nhours_x1.*.nc"         # Glob pattern to match files (merg_*.nc)
 
 # Processing parameters  
 default_zoom: 9
 time_chunk_size: 24  # 1 day worth of 1-hour data (balance memory vs parallelism)
-time_average: "1h"  # Options: null (no averaging), "1h" (1-hour), "3h", "6h", "1d" (daily), etc.
-original_time_suffix: "30MIN"  # Time resolution of source data for output filename (e.g., '30MIN', '1H', '1D')
+time_average: null  # Options: null (no averaging), "1h" (1-hour), "3h", "6h", "1d" (daily), etc.
+original_time_suffix: "1H"  # Time resolution of source data for output filename (e.g., '1H', '3H', '1D')
 convert_time: True   # Convert cftime.DatetimeJulian to standard datetime64 for pandas compatibility
+
+# Variables to remap and rename
+var_rename_map:
+  LW_flux_up_at_model_top: rlut
+  precip_total_surf_mass_flux: pr
+  diag_equiv_reflectivity_vert_max: max_reflectivity
 
 # Only process variables with these dimensions
 required_dimensions:
-  - ["time", "lat", "lon"]
-  - ["time", "lon", "lat"]
+  - ["time", "ncol"]
 
 # Variable filtering
 skip_variables:
-  - "*_bnds"
+  - "*band"
   - "*_bounds"
   - "time_bnds"
-  - "lat_bnds" 
-  - "lon_bnds"
+  - "areas"
+  - "hyai"
+  - "hyam"
+  - "hybi"
+  - "hybm"
+  - "lev" 
+  - "ilev"
+
+# Grid type configuration
+# Specifies the type of input grid for proper weight generation
+# Options: 'auto' (detect), 'latlon_1d' (regular), 'latlon_2d' (curvilinear), 'unstructured' (E3SM/SCREAM)
+grid_type: 'unstructured'  # SCREAM uses unstructured grid with ncol dimension
 
 # Spatial dimension configuration
-# IMPORTANT: For 2D grids, explicitly specify both x_dimname and y_dimname to avoid ambiguity
-# These define which dimensions represent the spatial axes in your data
-x_dimname: lon       # Name of x spatial dimension (longitude)
-y_dimname: lat       # Name of y spatial dimension (latitude)
+# For unstructured grids (E3SM/SCREAM), only x_dimname is needed
+x_dimname: ncol      # Single spatial dimension for unstructured grid
 
 # Coordinate variable names (if different from dimension names) 
 x_coordname: lon      # Name of longitude coordinate variable
 y_coordname: lat      # Name of latitude coordinate variable
 
 # Spatial chunking specification
-# Use -1 for no chunking (keep full dimension in memory - recommended for remapping)
 spatial_dimensions:
-  lon: -1   # Full longitude dimension in single chunk
-  lat: -1   # Full latitude dimension in single chunk
-
-# Coordinate variable names (if different from dimension names)
-# Uncomment and modify if your dataset uses different coordinate variable names
-# lon_name: lon          # Name of longitude coordinate variable
-# lat_name: lat          # Name of latitude coordinate variable
+  ncol: -1   # -1 means no chunking (keep full dimension)
 
 # Examples for different grid types:
-# 
-# Standard IMERG (lat/lon grid):
+#
+# Standard IMERG/IR_IMERG (lat/lon grid):
 #   x_dimname: lon
 #   y_dimname: lat
 #   spatial_dimensions:
 #     lon: -1
 #     lat: -1
 #
-# WRF output (custom dimension names):
+# WRF output (custom dimension and coordinate names):
 #   x_dimname: west_east
 #   y_dimname: south_north
 #   x_coordname: XLONG        # WRF uses XLONG for longitude coordinate
@@ -75,13 +84,13 @@ spatial_dimensions:
 #     south_north: -1
 #
 # E3SM/SCREAM (unstructured grid):
-#   x_dimname: ncol        # Only x_dimname needed for unstructured grids
+#   x_dimname: ncol           # Only x_dimname needed for unstructured grids
 #   spatial_dimensions:
 #     ncol: -1
 #
 # CMIP6 (varies by model):
-#   x_dimname: i           # or 'lon', 'x', depending on model
-#   y_dimname: j           # or 'lat', 'y', depending on model
+#   x_dimname: i              # or 'lon', 'x', depending on model
+#   y_dimname: j              # or 'lat', 'y', depending on model
 #   x_coordname: longitude    # or 'lon', 'LONGITUDE'
 #   y_coordname: latitude     # or 'lat', 'LATITUDE'
 #   spatial_dimensions:

@@ -19,6 +19,7 @@ file_glob: "3B-HHR.MS.MRG.3IMERG.*.nc4"  # Glob pattern to match IMERG files
 default_zoom: 9
 time_chunk_size: 24  # 1 day worth of 1-hour data (balance memory vs parallelism)
 time_average: "1h"  # Options: null (no averaging), "1h" (1-hour), "3h", "6h", "1d" (daily), etc.
+original_time_suffix: "30MIN"  # Time resolution of source data for output filename (e.g., '30MIN', '1H', '1D')
 convert_time: True   # Convert cftime.DatetimeJulian to standard datetime64 for pandas compatibility
 
 # Spatial dimension configuration
