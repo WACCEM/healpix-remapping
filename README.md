@@ -262,8 +262,16 @@ python launch_ir_imerg_processing.py 2020-01-01 2020-12-31 -c ../config/tb_imerg
 
 **Full year (batch job with SLURM):**
 ```bash
-# Edit submit_imerg_job.sh with your date range and config
-sbatch submit_imerg_job.sh 2019-01-01 2021-12-31 9
+# Submit batch job for extended processing
+cd scripts
+sbatch submit_scream_job.sh 2019-09-01 2020-08-31 -c ../config/scream_ne1024_1H_config.yaml -z 9
+```
+
+**Interactive processing (for testing):**
+```bash
+# Run interactively with environment activation
+cd scripts
+./run_interactive.sh 2019-09-01 2019-09-03 -c ../config/scream_ne120_3H_config.yaml -z 8
 ```
 
 ## Unstructured Grid Data (SCREAM/E3SM)
@@ -479,19 +487,19 @@ When running scripts, you can specify dates in multiple formats:
 
 **Daily (extends to end of day automatically):**
 ```bash
-python scripts/launch_imerg_processing.py 2020-01-01 2020-01-03 9
-# Processes: 2020-01-01 00:00:00 through 2020-01-03 23:59:59
+python scripts/launch_scream_processing.py 2019-09-01 2019-09-03 -c config/scream_ne1024_1H_config.yaml -z 9
+# Processes: 2019-09-01 00:00:00 through 2019-09-03 23:59:59
 ```
 
 **Hourly (extends to end of hour automatically):**
 ```bash
-python scripts/launch_imerg_processing.py 2020-01-01T06 2020-01-01T18 9
-# Processes: 2020-01-01 06:00:00 through 2020-01-01 18:59:59
+python scripts/launch_scream_processing.py 2019-09-01T06 2019-09-01T18 -c config/scream_ne1024_1H_config.yaml -z 9
+# Processes: 2019-09-01 06:00:00 through 2019-09-01 18:59:59
 ```
 
 **With spaces (quote the date):**
 ```bash
-python scripts/launch_imerg_processing.py "2020-01-01 06" "2020-01-01 18" 9
+python scripts/launch_scream_processing.py "2019-09-01 06" "2019-09-01 18" -c config/scream_ne1024_1H_config.yaml -z 9
 # Same as above
 ```
 
