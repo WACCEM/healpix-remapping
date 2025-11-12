@@ -16,16 +16,23 @@ from remap_to_healpix import process_to_healpix_zarr
 from src.preprocessing import subset_time_by_minute
 
 # IR_IMERG with time subsetting
+config = {
+    'input_base_dir': '/data/ir_imerg',
+    'time_chunk_size': 24,
+    'convert_time': True,
+    'date_pattern': r'_(\d{10})_',
+    'date_format': '%Y%m%d%H'
+}
+
 process_to_healpix_zarr(
     start_date=datetime(2020, 1, 1),
     end_date=datetime(2020, 12, 31),
     zoom=9,
     output_zarr="/path/to/output.zarr",
-    input_base_dir="/data/ir_imerg",
-    date_pattern=r'_(\d{10})_',
-    date_format='%Y%m%d%H',
+    weights_file="/path/to/weights/ir_imerg_z9_weights.nc",
     preprocessing_func=subset_time_by_minute,
-    preprocessing_kwargs={'time_subset': '00min'}
+    preprocessing_kwargs={'time_subset': '00min'},
+    config=config
 )
 ```
 
@@ -35,12 +42,18 @@ process_to_healpix_zarr(
 from src.preprocessing import subset_time_by_minute, apply_quality_mask, subset_by_region
 
 # Apply multiple preprocessing steps in sequence
+config = {
+    'input_base_dir': '/data/satellite',
+    'time_chunk_size': 24,
+    'convert_time': True
+}
+
 process_to_healpix_zarr(
     start_date=datetime(2020, 1, 1),
     end_date=datetime(2020, 12, 31),
     zoom=9,
     output_zarr="/path/to/output.zarr",
-    input_base_dir="/data/satellite",
+    weights_file="/path/to/weights/satellite_z9_weights.nc",
     preprocessing_func=[
         subset_by_region,
         subset_time_by_minute,
@@ -50,7 +63,8 @@ process_to_healpix_zarr(
         {'lat_bounds': (-30, 30), 'lon_bounds': None},  # Tropics only
         {'time_subset': '00min'},
         {'quality_threshold': 0.8}
-    ]
+    ],
+    config=config
 )
 ```
 
@@ -138,10 +152,20 @@ Then use it:
 ```python
 from src.preprocessing import my_custom_preprocessing
 
+config = {
+    'input_base_dir': '/data/input',
+    # ... other config options
+}
+
 process_to_healpix_zarr(
-    ...,
+    start_date=datetime(2020, 1, 1),
+    end_date=datetime(2020, 12, 31),
+    zoom=9,
+    output_zarr="/path/to/output.zarr",
+    weights_file="/path/to/weights.nc",
     preprocessing_func=my_custom_preprocessing,
-    preprocessing_kwargs={'param1': 'value', 'param2': 123}
+    preprocessing_kwargs={'param1': 'value', 'param2': 123},
+    config=config
 )
 ```
 
@@ -197,13 +221,18 @@ process_to_healpix_zarr(
 ### Workflow 1: IMERG Standard Processing
 ```python
 # No preprocessing needed
+config = {
+    'input_base_dir': '/data/IMERG',
+    'time_average': '1h'
+}
+
 process_to_healpix_zarr(
     start_date=datetime(2020, 1, 1),
     end_date=datetime(2020, 12, 31),
     zoom=9,
     output_zarr="imerg_output.zarr",
-    input_base_dir="/data/IMERG",
-    time_average="1h"
+    weights_file="/path/to/weights/imerg_z9_weights.nc",
+    config=config
 )
 ```
 
@@ -211,16 +240,21 @@ process_to_healpix_zarr(
 ```python
 from src.preprocessing import subset_time_by_minute
 
+config = {
+    'input_base_dir': '/data/ir_imerg',
+    'date_pattern': r'_(\d{10})_',
+    'date_format': '%Y%m%d%H'
+}
+
 process_to_healpix_zarr(
     start_date=datetime(2020, 1, 1),
     end_date=datetime(2020, 12, 31),
     zoom=9,
     output_zarr="ir_imerg_output.zarr",
-    input_base_dir="/data/ir_imerg",
-    date_pattern=r'_(\d{10})_',
-    date_format='%Y%m%d%H',
+    weights_file="/path/to/weights/ir_imerg_z9_weights.nc",
     preprocessing_func=subset_time_by_minute,
-    preprocessing_kwargs={'time_subset': '00min'}
+    preprocessing_kwargs={'time_subset': '00min'},
+    config=config
 )
 ```
 
@@ -228,16 +262,22 @@ process_to_healpix_zarr(
 ```python
 from src.preprocessing import subset_by_region, apply_quality_mask
 
+config = {
+    'input_base_dir': '/data/satellite'
+}
+
 process_to_healpix_zarr(
     start_date=datetime(2020, 1, 1),
     end_date=datetime(2020, 12, 31),
     zoom=9,
     output_zarr="regional_quality_output.zarr",
-    input_base_dir="/data/satellite",
+    weights_file="/path/to/weights/satellite_z9_weights.nc",
     preprocessing_func=[subset_by_region, apply_quality_mask],
     preprocessing_kwargs=[
         {'lat_bounds': (-10, 10), 'lon_bounds': (100, 150)},  # Maritime Continent
         {'quality_threshold': 0.9, 'quality_var': 'QC_flag'}
-    ]
+    ],
+    config=config
 )
 ```
+

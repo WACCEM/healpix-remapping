@@ -1,6 +1,6 @@
 # File Pattern Configuration Guide
 
-This guide explains how to configure the `process_imerg_to_zarr` function to work with different filename patterns and directory structures.
+This guide explains how to configure the `process_to_healpix_zarr` function to work with different filename patterns and directory structures.
 
 ## Quick Reference
 
@@ -181,15 +181,29 @@ base_dir/
   └── file4_20210102.nc
 ```
 
-## Complete Example: ir_imerg
+## Complete Example: IR_IMERG
 
 For files like `merg_2020123108_10km-pixel.nc`:
 
 ```python
 from datetime import datetime
-from remap_to_healpix import process_imerg_to_zarr
+from remap_to_healpix import process_to_healpix_zarr
+from src.preprocessing import subset_time_by_minute
 
-process_imerg_to_zarr(
+# Configuration dictionary
+config = {
+    'input_base_dir': '/data/ir_imerg',
+    'time_chunk_size': 24,
+    'convert_time': True,
+    
+    # File pattern configuration
+    'date_pattern': r'_(\d{10})_',     # Extract YYYYMMDDhh
+    'date_format': '%Y%m%d%H',         # Parse with hour
+    'use_year_subdirs': False,         # Flat directory
+    'file_glob': 'merg_*.nc',          # Match merg files
+}
+
+process_to_healpix_zarr(
     # Date range (include hours for hourly data)
     start_date=datetime(2020, 12, 31, 8),
     end_date=datetime(2020, 12, 31, 18),
@@ -197,17 +211,14 @@ process_imerg_to_zarr(
     # Output configuration
     zoom=9,
     output_zarr="/path/to/output.zarr",
-    input_base_dir="/data/ir_imerg",
+    weights_file="/path/to/weights/ir_imerg_z9_weights.nc",
     
-    # File pattern configuration
-    date_pattern=r'_(\d{10})_',     # Extract YYYYMMDDhh
-    date_format='%Y%m%d%H',          # Parse with hour
-    use_year_subdirs=False,          # Flat directory
-    file_glob='merg_*.nc',           # Match merg files
+    # Optional preprocessing
+    preprocessing_func=subset_time_by_minute,
+    preprocessing_kwargs={'time_subset': '00min'},
     
     # Processing options
-    time_average=None,
-    convert_time=True,
-    overwrite=True
+    overwrite=True,
+    config=config
 )
 ```
