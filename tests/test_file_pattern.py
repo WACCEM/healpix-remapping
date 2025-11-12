@@ -256,16 +256,16 @@ if __name__ == "__main__":
     # Example: Test scanning an actual directory
     # Uncomment and modify for your use case:
     
-    # test_directory_scan(
-    #     base_dir="/pscratch/sd/w/wcmca1/GPM/IR_IMERG_Combined_V07B",
-    #     date_pattern=r'_(\d{10})_',
-    #     date_format='%Y%m%d%H',
-    #     use_year_subdirs=True,
-    #     file_glob='*.nc',
-    #     start_date=datetime(2020, 1, 1, 0),
-    #     end_date=datetime(2020, 1, 2, 23),
-    #     max_display=20
-    # )
+    test_directory_scan(
+        base_dir="/global/cfs/cdirs/e3sm/beydoun/ne1024pg2_ne1024pg2.F2010-SCREAMv1.10022025.CESS2.P0K.n2048.2/run",
+        date_pattern=r'\.(\d{4}-\d{2}-\d{2})-',
+        date_format='%Y-%m-%d',
+        use_year_subdirs=False,
+        file_glob='1hi.INSTANT.nhours_x1.*.nc',
+        start_date=datetime(2019, 8, 1, 0),
+        end_date=datetime(2020, 8, 31, 23),
+        max_display=300
+    )
     
     print("\n✅ All tests completed!")
     print("\nTo test your own directory:")
