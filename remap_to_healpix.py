@@ -113,14 +113,10 @@ logger = logging.getLogger(__name__)
 warnings.filterwarnings('ignore', category=UserWarning)
 
 
-def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr, input_base_dir,
-                           weights_file=None, time_chunk_size=48,
-                           spatial_chunks=None, concat_dim='time',
-                           force_recompute=False, overwrite=False,
-                           time_average=None, convert_time=False, dask_config=None,
-                           date_pattern=r'\.(\d{8})-', date_format='%Y%m%d',
-                           use_year_subdirs=True, file_glob='*.nc*',
-                           preprocessing_func=None, preprocessing_kwargs=None):
+def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
+                           weights_file=None, overwrite=False, time_average=None,
+                           preprocessing_func=None, preprocessing_kwargs=None,
+                           config=None):
     r"""
     Main function to process gridded lat/lon datasets to HEALPix Zarr format.
     
@@ -140,163 +136,104 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr, input_base_
         HEALPix zoom level (order)
     output_zarr : str
         Output Zarr path
-    input_base_dir : str
-        Base directory containing data files or yearly subdirectories (required)
     weights_file : str, optional
         Weights file path for caching remapping weights
-    time_chunk_size : int
-        Time chunk size for processing (default: 48 for 2 days)
-    spatial_chunks : dict, optional
-        Spatial dimension chunking specification. If None, dimensions will be
-        auto-detected from the first data file.
-        
-        Auto-detection handles:
-            - IMERG/IR_IMERG: {'lat': -1, 'lon': -1}
-            - ERA5: {'latitude': -1, 'longitude': -1}
-            - E3SM: {'ncol': -1}
-            - MPAS: {'nCells': -1}
-        
-        Override examples:
-            {'lat': -1, 'lon': -1}  # Full spatial chunks (recommended for remapping)
-            {'lat': 100, 'lon': 100}  # Chunked spatial (for very large grids)
-            {'latitude': -1, 'longitude': -1}  # ERA5 explicit
-            {'ncol': -1}  # Unstructured grid explicit
-    concat_dim : str, optional
-        Name of the time/concatenation dimension (default: 'time')
-        Different datasets use different names:
-            - Most datasets: 'time'
-            - WRF: 'Time' or 'Times'
-            - Some CMIP6 models: 'time_counter'
-        Auto-detection will exclude this dimension when identifying spatial dimensions.
-    force_recompute : bool, default=False
-        If True, recompute weights even if weights_file exists
     overwrite : bool, default=False
         If True, overwrite existing Zarr files; if False, error on existing files
     time_average : str, optional
         Temporal averaging frequency (e.g., "1h", "3h", "6h", "1d")
         If None, no averaging is applied
-    convert_time : bool, optional
-        If True, convert cftime coordinates to standard datetime64
-        This makes the dataset compatible with pandas operations
-    dask_config : dict, optional
-        Dask configuration parameters (n_workers, threads_per_worker, memory_limit)
-    date_pattern : str, optional
-        Regex pattern to extract date string from filename (default: r'\.(\d{8})-')
-        Examples:
-            IMERG: r'\.(\d{8})-' matches '.20200101-'
-            IR_IMERG: r'_(\d{10})_' matches '_2020123108_'
-    date_format : str, optional
-        strptime format string to parse the date (default: '%Y%m%d')
-        Examples:
-            IMERG: '%Y%m%d' for YYYYMMDD
-            IR_IMERG: '%Y%m%d%H' for YYYYMMDDhh
-    use_year_subdirs : bool, optional
-        If True, search in yearly subdirectories (default: True)
-        If False, search directly in input_base_dir
-    file_glob : str, optional
-        Glob pattern for file matching (default: '*.nc*')
     preprocessing_func : callable or list of callables, optional
         Dataset-specific preprocessing function(s) to apply after reading files.
         Can be a single function or a list of functions to apply in sequence.
-        Each function should accept an xarray Dataset as first argument and return
-        a modified Dataset.
-        Examples:
-            preprocessing.subset_time_by_minute
-            [preprocessing.subset_time_by_minute, preprocessing.apply_quality_mask]
     preprocessing_kwargs : dict or list of dicts, optional
-        Keyword arguments to pass to preprocessing_func. If preprocessing_func is
-        a list, this should be a list of dicts with the same length.
-        Examples:
-            {'time_subset': '00min'}
-            [{'time_subset': '00min'}, {'quality_threshold': 0.8}]
+        Keyword arguments to pass to preprocessing function(s)
+    config : dict, optional
+        Configuration dictionary containing processing parameters. If provided,
+        individual parameters will be extracted from this dictionary. Required keys:
+        - input_base_dir: Base directory containing data files
+        - time_chunk_size: Time chunk size for processing (default: 48)
+        
+        Optional keys:
+        - spatial_dimensions: Spatial chunking specification (default: auto-detect)
+        - concat_dim: Time dimension name (default: 'time')
+        - force_recompute: Force recompute weights (default: False)
+        - grid_type: Grid type ('auto', 'latlon_1d', 'latlon_2d', 'unstructured')
+        - convert_time: Convert cftime to datetime64 (default: False)
+        - dask: Dask configuration dict (n_workers, threads_per_worker, memory_limit)
+        - date_pattern: Regex pattern for date extraction (default: r'\.(\d{8})-')
+        - date_format: strptime format string (default: '%Y%m%d')
+        - use_year_subdirs: Use yearly subdirectories (default: True)
+        - file_glob: File glob pattern (default: '*.nc*')
+        - skip_variables: List of variable patterns to skip (supports wildcards)
+        - required_dimensions: List of required dimension combinations
+        - remap_variables: Dict mapping input variable names to output names
     
     Returns:
     --------
-    xr.Dataset : The processed and remapped dataset
+    None
+        Writes output to zarr file specified by output_zarr
     
     Examples:
     ---------
-    # IMERG precipitation data (auto-detect dimensions)
-    process_to_healpix_zarr(
-        start_date=datetime(2020, 1, 1),
-        end_date=datetime(2020, 1, 31),
-        zoom=9,
-        output_zarr="/path/to/output.zarr",
-        input_base_dir="/data/IMERG",
-        time_average="1h"
-    )
-    
-    # ERA5 with explicit spatial dimensions
-    process_to_healpix_zarr(
-        start_date=datetime(2020, 1, 1),
-        end_date=datetime(2020, 1, 31),
-        zoom=9,
-        output_zarr="/path/to/output.zarr",
-        input_base_dir="/data/ERA5",
-        spatial_chunks={'latitude': -1, 'longitude': -1}  # Override auto-detection
-    )
-    
-    # IR_IMERG with time subsetting (new flexible approach)
-    from src.preprocessing import subset_time_by_minute
-    
+    # Using config dictionary (recommended)
+    config = {
+        'input_base_dir': '/data/SCREAM',
+        'time_chunk_size': 24,
+        'grid_type': 'unstructured',
+        'spatial_dimensions': {'ncol': -1},
+        'skip_variables': ['*_bounds', 'time_bnds'],
+        'required_dimensions': [['time', 'ncol']],
+        'remap_variables': {'precip_total_surf_mass_flux': 'pr'}
+    }
     process_to_healpix_zarr(
         start_date=datetime(2020, 1, 1),
         end_date=datetime(2020, 12, 31),
         zoom=9,
         output_zarr="/path/to/output.zarr",
-        input_base_dir="/data/ir_imerg",
-        date_pattern=r'_(\d{10})_',
-        date_format='%Y%m%d%H',
-        use_year_subdirs=True,
-        file_glob='merg_*.nc',
-        preprocessing_func=subset_time_by_minute,
-        preprocessing_kwargs={'time_subset': '00min'}
+        weights_file="/path/to/weights.nc",
+        config=config
     )
-    
-    # Multiple preprocessing steps (chained preprocessing)
-    from src.preprocessing import subset_time_by_minute, apply_quality_mask
-    
-    process_to_healpix_zarr(
-        start_date=datetime(2020, 1, 1),
-        end_date=datetime(2020, 12, 31),
-        zoom=9,
-        output_zarr="/path/to/output.zarr",
-        input_base_dir="/data/satellite",
-        preprocessing_func=[subset_time_by_minute, apply_quality_mask],
-        preprocessing_kwargs=[
-            {'time_subset': '00min'},
-            {'quality_threshold': 0.8}
-        ]
-    )
-    
-    # Generic dataset with custom spatial chunking
-    process_to_healpix_zarr(
-        start_date=datetime(2020, 1, 1),
-        end_date=datetime(2020, 12, 31),
-        zoom=9,
-        output_zarr="/path/to/output.zarr",
-        input_base_dir="/data/generic",
-        date_pattern=r'_(\d{8})\.nc',
-        date_format='%Y%m%d',
-        use_year_subdirs=False,
-        file_glob='data_*.nc',
-        spatial_chunks={'lat': 200, 'lon': 200},  # Custom chunking for large grids
-        time_average="1d"
-    )
-    
-    Note:
-    -----
-    This is the generalized version. The old function name process_imerg_to_zarr()
-    is maintained as an alias for backwards compatibility.
-    
-    Spatial Dimension Detection (Hybrid Approach):
-    -----------------------------------------------
-    1. If spatial_chunks is provided → use it (explicit override)
-    2. Otherwise, auto-detect from first data file
-    3. Fallback to {'lat': -1, 'lon': -1} if detection fails
-    
-    This hybrid approach provides flexibility while being user-friendly.
     """
+    
+    # Extract parameters from config dictionary with defaults
+    if config is None:
+        raise ValueError("config dictionary is required")
+    
+    # Required parameters
+    input_base_dir = config['input_base_dir']
+    
+    # Optional parameters with defaults
+    time_chunk_size = config.get('time_chunk_size', 48)
+    spatial_chunks = config.get('spatial_dimensions', None)
+    concat_dim = config.get('concat_dim', 'time')
+    force_recompute = config.get('force_recompute', False)
+    grid_type = config.get('grid_type', 'auto')
+    convert_time = config.get('convert_time', False)
+    dask_config = config.get('dask', None)
+    date_pattern = config.get('date_pattern', r'\.(\d{8})-')
+    date_format = config.get('date_format', '%Y%m%d')
+    use_year_subdirs = config.get('use_year_subdirs', True)
+    file_glob = config.get('file_glob', '*.nc*')
+    skip_variables = config.get('skip_variables', None)
+    required_dimensions = config.get('required_dimensions', None)
+    remap_variables = config.get('remap_variables', None)
+    
+    logger.info("="*70)
+    logger.info("Configuration Summary")
+    logger.info("="*70)
+    logger.info(f"Input directory: {input_base_dir}")
+    logger.info(f"Time chunk size: {time_chunk_size}")
+    logger.info(f"Grid type: {grid_type}")
+    if spatial_chunks:
+        logger.info(f"Spatial chunks: {spatial_chunks}")
+    if skip_variables:
+        logger.info(f"Skip variables: {skip_variables}")
+    if required_dimensions:
+        logger.info(f"Required dimensions: {required_dimensions}")
+    if remap_variables:
+        logger.info(f"Remap variables: {remap_variables}")
+    logger.info("="*70)
     
     # Get file list for date range FIRST (needed for auto-detection)
     files = utilities.get_input_files(
@@ -384,12 +321,50 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr, input_base_
         step_start = time.time()
         logger.info(f"Remapping to HEALPix zoom level {zoom}")
         
-        ds_remap = remap_tools.remap_delaunay(ds, zoom, weights_file, force_recompute)
+        # Pass config dictionary to remap_delaunay for flexible parameter handling
+        ds_remap = remap_tools.remap_delaunay(ds, zoom, weights_file, config=config)
         step_time = time.time() - step_start
         logger.info(f"✅ Step 3 completed in {step_time:.1f} seconds")
 
         logger.info(f"Remapped dataset: {ds_remap.sizes}")
         logger.info(f"Variables: {list(ds_remap.data_vars)}")
+        
+        # Apply variable subsetting and renaming if requested
+        if remap_variables:
+            logger.info("🔄 Step 3b: Subsetting and renaming variables...")
+            step_start = time.time()
+            
+            # Subset dataset to include variables in remap_variables + passthrough variables
+            # This automatically includes coordinate variables (time, cell, lev, etc.)
+            vars_to_keep = [var for var in remap_variables.keys() if var in ds_remap.data_vars]
+            
+            # Also keep passthrough variables (non-remapped variables like vertical coordinates)
+            passthrough_variables = config.get('passthrough_variables', [])
+            if passthrough_variables:
+                passthrough_to_keep = [var for var in passthrough_variables if var in ds_remap.data_vars]
+                vars_to_keep.extend(passthrough_to_keep)
+                if passthrough_to_keep:
+                    logger.info(f"   Including {len(passthrough_to_keep)} passthrough variable(s): {passthrough_to_keep}")
+            
+            if not vars_to_keep:
+                logger.warning(f"   None of the variables in remap_variables found in dataset")
+                logger.warning(f"   Requested: {list(remap_variables.keys())}")
+                logger.warning(f"   Available: {list(ds_remap.data_vars)}")
+            else:
+                logger.info(f"   Subsetting to {len(vars_to_keep)} variable(s): {vars_to_keep}")
+                ds_remap = ds_remap[vars_to_keep]
+                
+                # Rename the subsetted variables (but not passthrough variables)
+                renamed_vars = []
+                for old_name, new_name in remap_variables.items():
+                    if old_name in ds_remap.data_vars:
+                        ds_remap = ds_remap.rename({old_name: new_name})
+                        renamed_vars.append(f"{old_name} → {new_name}")
+                        logger.info(f"   Renamed: {old_name} → {new_name}")
+                
+                step_time = time.time() - step_start
+                logger.info(f"✅ Step 3b completed in {step_time:.1f} seconds ({len(renamed_vars)} variable(s) processed)")
+                logger.info(f"Updated variables: {list(ds_remap.data_vars)}")
 
         # Write to Zarr with optimal chunking and monitoring
         logger.info("🔄 Step 4: Writing to Zarr...")

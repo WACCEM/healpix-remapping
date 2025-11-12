@@ -3,13 +3,17 @@
 [![GitHub](https://img.shields.io/github/license/WACCEM/healpix-remapping)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-A high-performance, scalable pipeline for remapping **any gridded lat/lon NetCDF dataset** to HEALPix format. Originally designed for IMERG precipitation data, now generalized to work with diverse datasets. Optimized for NERSC Perlmutter with Dask parallel processing and Zarr cloud-native outputs.
+A high-performance, scalable pipeline for remapping **any gridded NetCDF dataset** to HEALPix format. Supports both regular lat/lon grids and unstructured grids (e.g., SCREAM, E3SM). Optimized for NERSC Perlmutter with Dask parallel processing and Zarr cloud-native outputs.
 
-## ✨ What's New (Major Refactoring)
+## ✨ What's New (Unstructured Grid Support)
 
-**Generalized Workflow** - No longer limited to IMERG! Now supports any gridded lat/lon dataset with flexible file pattern matching.
+**Unstructured Grid Support** - Now supports remapping unstructured grids (e.g., SCREAM, E3SM) in addition to regular lat/lon grids! Automatically detects grid type or allows explicit specification via `grid_type` parameter.
 
-**Reorganized Project Structure** - Clean separation of library code, execution scripts, configuration files, and tests.
+**Vectorized 3D Remapping** - Efficient vectorized approach for multi-level 3D data with configurable variable selection and renaming via `remap_variables` and `passthrough_variables`.
+
+**Flexible Coordinate Specification** - Explicit control over dimension and coordinate names with `x_dimname`, `y_dimname`, `x_coordname`, `y_coordname` parameters.
+
+**Mandatory Weights Caching** - `weights_file` parameter now required for efficient processing. Weights are automatically computed and cached on first run, then reused for subsequent remapping.
 
 **Flexible Date/Time Specification** - Multiple date formats supported (YYYY-MM-DD, YYYY-MM-DDTHH, YYYY-MM-DD HH) with automatic end-of-day/hour extension.
 
@@ -19,10 +23,13 @@ A high-performance, scalable pipeline for remapping **any gridded lat/lon NetCDF
 
 ## Features
 
+- **Multiple Grid Types Supported**: Regular lat/lon grids (1D/2D) and unstructured grids (SCREAM, E3SM)
 - **Generalized for Any Dataset**: Flexible file pattern matching for diverse filename conventions
+- **Vectorized 3D Remapping**: Efficient processing of multi-level atmospheric data with variable selection
 - **Efficient Parallel Processing**: Dask-based processing with optimized memory usage
 - **HEALPix Support**: Any zoom level with automatic spatial chunking
-- **Zarr Output**: Cloud-native format with customizable chunk sizes
+- **Weights Caching**: Compute once, reuse forever for dramatic speedup
+- **Zarr Output**: Cloud-native format with customizable chunk sizes and compression
 - **NERSC Optimized**: Tuned for Perlmutter architecture with SLURM integration
 - **Configuration Driven**: YAML-based configuration for easy parameter management
 - **Flexible Date/Time**: Support for daily, hourly, and sub-hourly time specifications
@@ -46,6 +53,7 @@ python tests/test_setup.py
 
 **For IMERG dataset:** Edit `config/imerg_config.yaml`  
 **For IR_IMERG dataset:** Edit `config/tb_imerg_config.yaml`  
+**For SCREAM dataset:** Edit `config/scream_ne1024_1H_config.yaml` or `config/scream_ne120_3H_config.yaml`  
 **For other datasets:** Copy and customize one of the above configs
 
 #### Key Configuration Sections:
@@ -55,10 +63,68 @@ python tests/test_setup.py
 input_base_dir: "/path/to/your/input/data/"
 output_base_dir: "/path/to/output/zarr/files/"
 output_basename: "MyDataset_V1"
-weights_dir: "/path/to/weights/"  # Weights are cached and reused
+
+# Weights file configuration (REQUIRED)
+# Specify the path where remapping weights will be stored
+# - If file exists: Weights are loaded for fast remapping
+# - If file doesn't exist: Weights are computed once and saved for reuse
+# - Subsequent runs reuse cached weights for much faster processing
+# Example: "/path/to/weights/scream_to_healpix_z{zoom}_weights.nc"
+weights_file: "/path/to/weights/dataset_to_healpix_z{zoom}_weights.nc"
 ```
 
-**b) File Pattern Matching:**
+**b) Grid Type and Coordinate Configuration:**
+
+The workflow automatically detects your grid type, but you can specify it explicitly:
+
+```yaml
+# Grid type (OPTIONAL - will auto-detect if not specified)
+# Options: 'auto', 'latlon_1d', 'latlon_2d', 'unstructured'
+grid_type: 'auto'
+
+# Dimension names (OPTIONAL - for explicit control)
+# Specify the names of spatial dimensions in your dataset
+# x_dimname: "lon"        # For regular lat/lon: usually "lon"
+# y_dimname: "lat"        # For regular lat/lon: usually "lat"
+# x_dimname: "ncol"       # For unstructured: usually "ncol" (SCREAM, E3SM)
+
+# Coordinate variable names (OPTIONAL - for explicit control)
+# Specify the variable names containing coordinate values
+# x_coordname: "lon"      # Usually same as dimension name for regular grids
+# y_coordname: "lat"      # Usually same as dimension name for regular grids
+# x_coordname: "lon"      # For unstructured: coordinate arrays (can differ from dimension)
+# y_coordname: "lat"      # For unstructured: coordinate arrays
+
+# Common configurations by dataset type:
+# - IMERG/IR_IMERG: Auto-detect works (lat/lon 1D regular grid)
+# - SCREAM/E3SM: x_dimname: "ncol", grid_type: "unstructured"
+# - WRF: grid_type: "latlon_2d" (2D lat/lon arrays)
+```
+
+**c) Variable Selection and Remapping:**
+
+Control which variables to process and how to rename them:
+
+```yaml
+# Variables to remap to HEALPix grid (REQUIRED)
+# Dictionary mapping: input_var_name: output_var_name
+remap_variables:
+  u: "ua"          # Zonal wind
+  v: "va"          # Meridional wind
+  w: "omega"       # Vertical velocity
+  geopotential: "z"  # Geopotential height
+  T: "ta"          # Air temperature
+
+# Variables to pass through without remapping (OPTIONAL)
+# List of variable names that are already on the target grid or don't need spatial remapping
+passthrough_variables:
+  - hyam           # Hybrid sigma coordinate A
+  - hybm           # Hybrid sigma coordinate B
+  - P0             # Reference pressure
+  - ps             # Surface pressure (if no spatial remapping needed)
+```
+
+**d) File Pattern Matching:**
 ```yaml
 # Example for IMERG files: 3B-HHR.MS.MRG.3IMERG.20211231-S170000-E172959.1020.V07B.HDF5.nc4
 date_pattern: "\\.(\\d{8})-"              # Regex to extract date (use \\d for digits)
@@ -71,9 +137,15 @@ date_pattern: "_(\\d{10})_"               # Extract YYYYMMDDhh
 date_format: "%Y%m%d%H"                   # Parse with hour
 use_year_subdirs: true                    # Files in YYYY/ subdirectories
 file_glob: "merg_*.nc"                    # Match merg files
+
+# Example for SCREAM files: SCREAM.ne1024pg2.eam.h0.2019-09-01-00000.nc
+date_pattern: "\\.(\\d{4}-\\d{2}-\\d{2})-"  # Extract YYYY-MM-DD
+date_format: "%Y-%m-%d"                      # Parse with dashes
+use_year_subdirs: false                      # All files in same directory
+file_glob: "*.eam.h0.*.nc"                   # Match SCREAM history files
 ```
 
-**c) Processing Parameters:**
+**e) Processing Parameters:**
 ```yaml
 default_zoom: 9                # HEALPix zoom level (9 recommended for ~0.1° data)
 time_chunk_size: 24           # Number of time steps per chunk (balance memory/parallelism)
@@ -88,7 +160,7 @@ convert_time: True            # Convert cftime to datetime64 for pandas
 # Common spatial dimension names by dataset:
 #   IMERG/IR_IMERG: {lat: -1, lon: -1}
 #   ERA5: {latitude: -1, longitude: -1}
-#   E3SM: {ncol: -1}
+#   E3SM/SCREAM: {ncol: -1}
 #   CMIP6: varies by model - may be lat/lon or latitude/longitude
 #
 # Note: Auto-detection examines the first data file and identifies coordinate
@@ -106,7 +178,7 @@ convert_time: True            # Convert cftime to datetime64 for pandas
 # Only specify if your dataset uses a different name than 'time'
 ```
 
-**d) Dask Configuration (Optimized for I/O-Intensive Operations):**
+**f) Dask Configuration (Optimized for I/O-Intensive Operations):**
 ```yaml
 dask:
   n_workers: 16              # More workers = better parallel I/O throughput
@@ -145,62 +217,148 @@ If no files are found or dates aren't parsed correctly, adjust your config and t
 
 ### 5. Process Your Data
 
-**Single day:**
+All processing scripts now use argparse for flexible command-line arguments:
+
+**Basic usage pattern:**
+```bash
+python launch_<dataset>_processing.py START_DATE END_DATE -c CONFIG_FILE -z ZOOM [options]
+```
+
+**IMERG dataset examples:**
 ```bash
 cd scripts
-python launch_imerg_processing.py 2020-01-01 2020-01-01 9
+
+# Single day
+python launch_imerg_processing.py 2020-01-01 2020-01-01 -c ../config/imerg_config.yaml -z 9
+
+# Single month
+python launch_imerg_processing.py 2020-01-01 2020-01-31 -c ../config/imerg_config.yaml -z 9
+
+# With hourly precision
+python launch_imerg_processing.py "2020-01-01T06" "2020-01-01T18" -c ../config/imerg_config.yaml -z 9
+
+# With overwrite option
+python launch_imerg_processing.py 2020-01-01 2020-01-31 -c ../config/imerg_config.yaml -z 9 --overwrite
 ```
 
-**Single month:**
+**SCREAM dataset examples:**
 ```bash
-python launch_imerg_processing.py 2020-01-01 2020-01-31 9
+cd scripts
+
+# Single day with SCREAM ne1024 configuration
+python launch_scream_processing.py 2019-09-01 2019-09-02 -c ../config/scream_ne1024_1H_config.yaml -z 9 --overwrite
+
+# Multiple days with SCREAM ne120 configuration
+python launch_scream_processing.py 2019-09-01 2019-09-10 -c ../config/scream_ne120_3H_config.yaml -z 8
+
+# With explicit date-time format
+python launch_scream_processing.py "2019-09-01T00" "2019-09-02T00" -c ../config/scream_ne1024_1H_config.yaml -z 9
 ```
 
-**With hourly precision:**
+**IR_IMERG dataset:**
 ```bash
-python launch_imerg_processing.py "2020-01-01T06" "2020-01-01T18" 9
+python launch_ir_imerg_processing.py 2020-01-01 2020-12-31 -c ../config/tb_imerg_config.yaml -z 9
 ```
 
-**Full year (batch job):**
+**Full year (batch job with SLURM):**
 ```bash
-sbatch submit_imerg_job.sh 2020-01-01 2020-12-31 9
+# Edit submit_imerg_job.sh with your date range and config
+sbatch submit_imerg_job.sh 2019-01-01 2021-12-31 9
 ```
 
-**With overwrite option:**
-```bash
-python launch_imerg_processing.py 2020-01-01 2020-01-31 9 --overwrite
+## Unstructured Grid Data (SCREAM/E3SM)
+
+The workflow now supports unstructured grid datasets like SCREAM and E3SM with the following key features:
+
+### Key Differences from Regular Grids
+
+1. **Grid Type Detection**: Automatically detects unstructured grids based on `ncol` dimension
+2. **No Meshgrid Required**: Coordinates are already 1D arrays per cell
+3. **Periodic Boundary Handling**: Automatic extension for global grids to handle periodicity
+4. **3D Multi-Variable Support**: Efficient vectorized remapping for multi-level atmospheric data
+
+### SCREAM Configuration Example
+
+```yaml
+# Grid configuration
+grid_type: 'unstructured'      # Explicitly specify for SCREAM
+x_dimname: "ncol"              # Spatial dimension name
+x_coordname: "lon"             # Longitude coordinate variable
+y_coordname: "lat"             # Latitude coordinate variable
+
+# Variable selection and renaming
+remap_variables:
+  u: "ua"                      # Zonal wind
+  v: "va"                      # Meridional wind
+  w: "omega"                   # Vertical velocity
+  T: "ta"                      # Temperature
+  Q: "hus"                     # Specific humidity
+
+# Pass-through variables (no remapping)
+passthrough_variables:
+  - hyam                       # Hybrid coordinate A
+  - hybm                       # Hybrid coordinate B
+  - P0                         # Reference pressure
+
+# Mandatory weights file
+weights_file: "/path/to/weights/scream_ne1024_to_healpix_z9_weights.nc"
 ```
+
+### Processing SCREAM Data
+
+```bash
+# Single day processing
+python launch_scream_processing.py 2019-09-01 2019-09-02 \
+    -c ../config/scream_ne1024_1H_config.yaml \
+    -z 9 \
+    --overwrite
+
+# Multiple days
+python launch_scream_processing.py 2019-09-01 2019-09-30 \
+    -c ../config/scream_ne120_3H_config.yaml \
+    -z 8
+```
+
+### Performance Notes
+
+- **First run**: Weights computation may take 5-10 minutes for high-resolution grids (ne1024)
+- **Subsequent runs**: Weights are loaded from cache (~seconds), dramatically faster
+- **Memory usage**: ~24GB RAM for zoom 9 processing with 16 workers
+- **Throughput**: Similar to regular grids (~15-20 GB/minute write speed)
 
 ## Project Structure
 
 ```
 healpix-remapping/
 ├── README.md                           # This file
-├── remap_to_healpix.py             # Main library module
-├── setup.sh                           # Environment setup script
+├── remap_to_healpix.py                 # Main library module
+├── setup.sh                            # Environment setup script
 │
-├── config/                            # Configuration files
-│   ├── imerg_config.yaml             # IMERG dataset configuration
-│   └── tb_imerg_config.yaml          # IR_IMERG dataset configuration
+├── config/                             # Configuration files
+│   ├── imerg_config.yaml              # IMERG dataset configuration
+│   ├── tb_imerg_config.yaml           # IR_IMERG dataset configuration
+│   ├── scream_ne1024_1H_config.yaml   # SCREAM ne1024 high-res configuration
+│   └── scream_ne120_3H_config.yaml    # SCREAM ne120 standard configuration
 │
-├── scripts/                           # Execution scripts
-│   ├── launch_imerg_processing.py    # IMERG launcher
-│   ├── launch_ir_imerg_processing.py # IR_IMERG launcher
-│   ├── coarsen_healpix.py            # HEALPix coarsening utility
-│   └── example_usage.py              # 4 dataset examples
+├── scripts/                            # Execution scripts
+│   ├── launch_imerg_processing.py     # IMERG launcher
+│   ├── launch_ir_imerg_processing.py  # IR_IMERG launcher
+│   ├── launch_scream_processing.py    # SCREAM launcher
+│   ├── coarsen_healpix.py             # HEALPix coarsening utility
+│   └── example_usage.py               # 4 dataset examples
 │
-├── tests/                             # Test utilities
-│   ├── test_setup.py                 # Environment validation
-│   └── test_file_pattern.py          # File pattern testing (USE THIS FIRST!)
+├── tests/                              # Test utilities
+│   ├── test_setup.py                  # Environment validation
+│   └── test_file_pattern.py           # File pattern testing (USE THIS FIRST!)
 │
-├── src/                               # Library modules
-│   ├── __init__.py                   # Package initialization
-│   ├── utilities.py                  # General utilities
-│   ├── zarr_tools.py                 # Zarr I/O utilities
-│   ├── remap_tools.py                # Remapping functions
-│   └── chunk_tools.py                # Chunking calculations
+├── src/                                # Library modules
+│   ├── __init__.py                    # Package initialization
+│   ├── utilities.py                   # General utilities
+│   ├── zarr_tools.py                  # Zarr I/O utilities
+│   ├── remap_tools.py                 # Remapping functions (grid type handling)
+│   └── chunk_tools.py                 # Chunking calculations
 │
-└── notebooks/                         # Jupyter notebooks for development
+└── notebooks/                          # Jupyter notebooks for development
 ```
 
 
@@ -656,118 +814,46 @@ if match:
 - Add complex communication/scheduler settings (increases deadlock risk)
 
 
-## Further Development
+## Advanced Features
 
-### Extending for Different Input Grid Types
+### Grid Type Support
 
-The current workflow is optimized for **regular 1D lat/lon gridded data** (e.g., IMERG, where lat and lon are 1D arrays). The code can be adapted for other grid types with modifications to `src/remap_tools.py` → `gen_weights()` function.
+The workflow now supports multiple input grid types with automatic detection:
 
-**File to modify:** `src/remap_tools.py` → `gen_weights()` function
+- **`latlon_1d`**: Regular lat/lon grids with 1D coordinate arrays (e.g., IMERG, ERA5)
+- **`latlon_2d`**: Curvilinear grids with 2D lat/lon arrays (e.g., WRF)
+- **`unstructured`**: Unstructured grids with 1D coordinates per cell (e.g., SCREAM, E3SM)
 
-#### Current Implementation for 1D Lat/Lon Grids
+Grid type is automatically detected based on coordinate dimensions, but can be explicitly specified via the `grid_type` configuration parameter if needed.
 
-The `gen_weights()` function currently handles regular 1D lat/lon grids by creating a 2D meshgrid:
+**Implementation details** can be found in `src/remap_tools.py` → `gen_weights()` function, which includes:
+- Automatic grid type detection
+- Periodic boundary handling for global unstructured grids
+- Delaunay triangulation using `easygems.remap`
+- Weight caching for efficient reuse
 
-```python
-# Create 2D meshgrid and flatten for regular lat/lon grid
-lon_2d, lat_2d = np.meshgrid(ds.lon.values, ds.lat.values)
-source_lon = lon_2d.flatten()
-source_lat = lat_2d.flatten()
+### Variable Selection and Renaming
+
+Use `remap_variables` to control which variables are remapped to HEALPix and optionally rename them:
+
+```yaml
+remap_variables:
+  u: "ua"           # Rename u → ua
+  v: "va"           # Rename v → va
+  T: "ta"           # Rename T → ta
+  geopotential: "z" # Rename geopotential → z
 ```
 
-This creates a 2D grid from 1D coordinate arrays, then flattens it for Delaunay triangulation.
+Use `passthrough_variables` for variables that don't need spatial remapping:
 
-#### For Unstructured Grid Data (e.g., Global Climate Models)
-
-**Good news:** Unstructured grids are actually **simpler** to handle! Each cell already has unique lat/lon coordinates, so the meshgrid step is unnecessary.
-
-**Example modification for unstructured grids:**
-
-```python
-# For unstructured grids (e.g., SCREAM, E3SM with ncol dimension)
-# Coordinates are already 1D arrays with one value per cell
-source_lon = ds.lon.values  # Already 1D: (ncol,)
-source_lat = ds.lat.values  # Already 1D: (ncol,)
-
-# For global unstructured grids, handle periodicity:
-lon_periodic = np.hstack((source_lon - 360, source_lon, source_lon + 360))
-lat_periodic = np.hstack((source_lat, source_lat, source_lat))
-
-# Compute weights with periodic extension
-hp_lon, hp_lat = hp.pix2ang(nside=nside, ipix=np.arange(npix), lonlat=True, nest=True)
-hp_lon = (hp_lon + 180) % 360 - 180  # Shift to [-180, 180)
-hp_lon += 360 / (4 * nside) / 4      # Quarter-width shift
-
-weights = egr.compute_weights_delaunay(
-    points=(lon_periodic, lat_periodic),
-    xi=(hp_lon, hp_lat)
-)
-
-# Remap source indices back to valid range
-weights = weights.assign(src_idx=weights.src_idx % source_lat.size)
+```yaml
+passthrough_variables:
+  - hyam    # Coordinate variables
+  - hybm
+  - P0
 ```
 
-#### For 2D Lat/Lon Grids (e.g., WRF)
-
-If your input data already has 2D lat/lon arrays (e.g., WRF model output with `XLAT(y, x)` and `XLONG(y, x)`), the meshgrid step is also unnecessary:
-
-```python
-# For 2D lat/lon grids (e.g., WRF output)
-# Coordinates are already 2D: (nlat, nlon)
-source_lon = ds.lon.values.flatten()
-source_lat = ds.lat.values.flatten()
-
-# Then proceed with weight computation as usual
-```
-
-#### Recommended Enhancement: Add Grid Type Detection
-
-Consider adding a grid type flag or automatic detection to `gen_weights()`:
-
-```python
-def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='auto'):
-    """
-    Parameters:
-    -----------
-    grid_type : str, default='auto'
-        Type of input grid:
-        - 'auto': Automatically detect from coordinate dimensions
-        - 'latlon_1d': Regular lat/lon with 1D coordinates (requires meshgrid)
-        - 'latlon_2d': Curvilinear grid with 2D lat/lon arrays
-        - 'unstructured': Unstructured grid with 1D coordinate per cell
-    """
-    
-    # Auto-detect grid type
-    if grid_type == 'auto':
-        if ds.lon.ndim == 1 and ds.lat.ndim == 1:
-            if 'ncol' in ds.dims or 'cell' in ds.dims:
-                grid_type = 'unstructured'
-            else:
-                grid_type = 'latlon_1d'
-        elif ds.lon.ndim == 2 and ds.lat.ndim == 2:
-            grid_type = 'latlon_2d'
-    
-    # Handle different grid types
-    if grid_type == 'latlon_1d':
-        # Current implementation: create meshgrid
-        lon_2d, lat_2d = np.meshgrid(ds.lon.values, ds.lat.values)
-        source_lon = lon_2d.flatten()
-        source_lat = lat_2d.flatten()
-    
-    elif grid_type == 'latlon_2d':
-        # 2D coordinates: just flatten
-        source_lon = ds.lon.values.flatten()
-        source_lat = ds.lat.values.flatten()
-    
-    elif grid_type == 'unstructured':
-        # Unstructured: coordinates already 1D per cell
-        source_lon = ds.lon.values
-        source_lat = ds.lat.values
-    
-    # Continue with weight computation...
-```
-
-**Note:** The current implementation uses `easygems.remap` for Delaunay triangulation, not ESMF. This approach works well for all grid types mentioned above.
+This provides fine-grained control over output variables and is particularly useful for 3D multi-variable datasets like SCREAM.
 
 ### Splitting Output into Multiple Zarr Files
 
@@ -776,17 +862,14 @@ The current workflow combines **all input files within the date range** into a *
 - Reduced file management overhead
 - Efficient time-dimension chunking
 
-**If you need separate output files** (e.g., one Zarr file per day, month, or year), you'll need to modify the main processing logic:
+**If you need separate output files** (e.g., one Zarr file per day, month, or year), you can call the processing function multiple times with different date ranges:
 
-**File to modify:** `remap_to_healpix.py` → Main processing loop
-
-**Approach 1: Multiple time ranges**
 ```python
 from datetime import datetime
 import calendar
 from remap_to_healpix import process_to_healpix_zarr
 
-# Instead of one large date range, process month by month
+# Process month by month
 for year in range(start_year, end_year + 1):
     for month in range(1, 13):
         monthly_start = datetime(year, month, 1)
@@ -802,11 +885,6 @@ for year in range(start_year, end_year + 1):
             # ... other parameters ...
         )
 ```
-
-**Approach 2: Modify internal chunking**
-- Split the time dimension processing in `utilities.read_concat_files()` and `process_to_healpix_zarr()`
-- Write separate Zarr files for each temporal chunk
-- Update the output file naming logic
 
 **Trade-offs to consider:**
 - ✅ More granular outputs easier to manage individually

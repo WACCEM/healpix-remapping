@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
 """
-Flexible launcher script for IR+IMERG to HEALPix processing
+Flexible launcher script for SCREAM to HEALPix processing
 
-This script processes IR+IMERG data files with flexible file pattern matching.
-It reads configuration from a YAML config file (default: tb_imerg_config.yaml).
+This script processes SCREAM data files with flexible file pattern matching.
+It reads configuration from a YAML config file (default: scream_2d_config.yaml).
 
 Usage: 
-    python launch_ir_imerg_processing.py START_DATE END_DATE [options]
+    python launch_scream_processing.py START_DATE END_DATE [options]
 
 Examples:
-    python launch_ir_imerg_processing.py 2020-01-01 2020-12-31 -z 9
-    python launch_ir_imerg_processing.py 2020-01-01 2020-01-31 -z 9 --overwrite
-    python launch_ir_imerg_processing.py 2020-01-01 2020-12-31 -c custom_config.yaml -z 9
-    python launch_ir_imerg_processing.py 2020-01-01 2020-12-31 -z 9 --time-subset 00min
+    python launch_scream_processing.py 2019-08-01 2020-09-01 -z 9
+    python launch_scream_processing.py 2019-08-01 2020-09-01 -z 9 --overwrite
+    python launch_scream_processing.py 2019-08-01 2020-09-01 -c custom_config.yaml -z 9
 
 Configuration:
-    Edit config/tb_imerg_config.yaml (or specify custom config) to configure:
+    Edit config/scream_2d_config.yaml (or specify custom config) to configure:
     - Input/output paths
     - File search patterns (date_pattern, date_format, use_year_subdirs, file_glob)
     - Processing parameters (zoom level, time averaging, chunking)
     - Dask cluster settings
-    - original_time_suffix: Time resolution of source data (e.g., '30MIN', '1H', '1D')
+    - original_time_suffix: Time resolution of source data (e.g., '1H', '3H', '1D')
 """
 
 import sys
@@ -33,7 +32,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from remap_to_healpix import process_to_healpix_zarr
 from src.utilities import parse_date
-from src.preprocessing import subset_time_by_minute
 
 def load_config(config_path):
     """Load configuration from YAML file"""
@@ -43,25 +41,19 @@ def load_config(config_path):
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
-        description='Process IR+IMERG data to HEALPix format',
+        description='Process SCREAM data to HEALPix format',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s 2020-01-01 2020-12-31 -z 9
-  %(prog)s 2020-01-01 2020-01-31 -z 9 --overwrite
-  %(prog)s 2020-01-01 2020-12-31 -c custom_config.yaml -z 9
-  %(prog)s 2020-01-01T00 2020-12-31T23 -z 9 -t 3h
-  %(prog)s 2020-01-01 2020-12-31 -z 9 --time-subset 00min
+  %(prog)s 2019-08-01 2020-09-01 -z 9
+  %(prog)s 2019-08-01 2020-09-01 -z 9 --overwrite
+  %(prog)s 2019-08-01 2020-09-01 -c custom_config.yaml -z 9
+  %(prog)s 2019-08-01T00 2020-09-01T23 -z 9 -t 3h
 
 Date formats:
   YYYY-MM-DD       - Date only (end_date extends to 23:59:59)
   YYYY-MM-DDTHH    - Date with hour (end_date extends to HH:59:59)
   YYYY-MM-DD HH    - Date with hour, space separated
-
-Time subsetting (optional):
-  --time-subset 00min  - Keep only times at ~00 minutes (e.g., 00:00, 01:00, 02:00)
-  --time-subset 30min  - Keep only times at ~30 minutes (e.g., 00:30, 01:30, 02:30)
-  (Useful when hourly-averaged data is stored at 30-min intervals - reduces output by 50%)
         """
     )
     
@@ -73,13 +65,11 @@ Time subsetting (optional):
     
     # Optional arguments
     parser.add_argument('-c', '--config', type=str, default=None,
-                        help='Path to config YAML file (default: config/tb_imerg_config.yaml)')
+                        help='Path to config YAML file (default: config/scream_2d_config.yaml)')
     parser.add_argument('-z', '--zoom', type=int, default=None,
                         help='HEALPix zoom level (overrides config default)')
     parser.add_argument('-t', '--time-average', type=str, default=None,
                         help='Time averaging window (e.g., 1h, 3h, 6h, 1d) - overrides config')
-    parser.add_argument('--time-subset', type=str, choices=['00min', '30min'], default=None,
-                        help='Subset times by minute (00min or 30min)')
     parser.add_argument('--overwrite', action='store_true',
                         help='Overwrite existing output files')
     parser.add_argument('--output', type=str, default=None,
@@ -100,7 +90,7 @@ def main():
         config_path = Path(args.config)
     else:
         script_dir = Path(__file__).parent
-        config_path = script_dir.parent / "config" / "tb_imerg_config.yaml"
+        config_path = script_dir.parent / "config" / "scream_2d_config.yaml"
     
     if not config_path.exists():
         print(f"Error: Config file not found: {config_path}")
@@ -118,11 +108,10 @@ def main():
     zoom = args.zoom or config['default_zoom']
     time_average = args.time_average or config.get('time_average')
     overwrite = args.overwrite
-    time_subset = args.time_subset  # None, '00min', or '30min'
-    output_basename = config.get('output_basename', 'IR_IMERG_V7')
+    output_basename = config.get('output_basename', 'SCREAMv1')
 
     # Determine time suffix for filename
-    # Priority: 1) time_average (if specified), 2) original_time_suffix from config, 3) default to '30MIN'
+    # Priority: 1) time_average (if specified), 2) original_time_suffix from config (required)
     if time_average:
         # Convert time averaging to short format for filename
         time_suffix = time_average.upper().replace('H', 'H').replace('D', 'D')
@@ -130,23 +119,22 @@ def main():
         # Use the original data time resolution from config
         time_suffix = config['original_time_suffix'].upper()
     else:
-        # Default to 30MIN (half-hourly)
-        time_suffix = '30MIN'
+        # Error: original_time_suffix must be specified in config
+        print("Error: 'original_time_suffix' must be specified in config file")
+        print("Add this to your config YAML:")
+        print("  original_time_suffix: '1H'  # or '3H', '1D', etc.")
+        sys.exit(1)
     
     # Create output filename
     if args.output:
         output_file = args.output
     else:
         date_range = f"{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
-        
-        # Add time subset to filename if specified
-        # subset_suffix = f"_{time_subset}" if time_subset else ""
-        # filename = f"{output_basename}_{time_suffix}{subset_suffix}_zoom{zoom}_{date_range}.zarr"
         filename = f"{output_basename}_{time_suffix}_zoom{zoom}_{date_range}.zarr"
         output_file = str(Path(config['output_base_dir']) / filename)
 
     print(f"\n{'='*70}")
-    print(f"Processing IR+IMERG data")
+    print(f"Processing SCREAM data")
     print(f"{'='*70}")
     print(f"Date range:")
     print(f"  Start: {start_date.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -155,62 +143,69 @@ def main():
     if time_average:
         print(f"Temporal averaging: {time_average}")
     else:
-        print(f"Temporal averaging: None ({time_suffix} resolution)")
-    if time_subset:
-        print(f"Time subsetting: {time_subset}")
+        print("Temporal averaging: None (original resolution)")
     print(f"\nOutput file: {output_file}")
     if overwrite:
         print("⚠️  Overwrite mode enabled - existing files will be replaced")
     
-    # Determine weights file path
-    # Priority: 1) weights_file in config (explicit), 2) weights_dir + auto-generated name (backward compat)
-    if 'weights_file' in config and config['weights_file']:
-        # Use explicitly specified weights file from config
-        weights_file = str(Path(config['weights_file']))
-        print(f"Using explicit weights file from config: {weights_file}")
-    elif 'weights_dir' in config:
-        # Backward compatibility: auto-generate weights filename from weights_dir
-        weights_file = str(Path(config['weights_dir']) / f"ir_imerg_v07b_to_healpix_z{zoom}_weights.nc")
-        print(f"Auto-generated weights file from weights_dir: {weights_file}")
+    # Require weights file path for efficient caching
+    if 'weights_file' not in config or not config['weights_file']:
+        print("\n" + "="*70)
+        print("ERROR: weights_file must be specified in config")
+        print("="*70)
+        print("The weights file is required for efficient processing.")
+        print("Add this to your config YAML:")
+        print("")
+        print("weights_file: \"/path/to/weights/scream_to_healpix_z{zoom}_weights.nc\"")
+        print("")
+        print("Note: The file will be created automatically on first run if it doesn't exist,")
+        print("      then reused on subsequent runs for much faster processing.")
+        print("="*70)
+        sys.exit(1)
+    
+    weights_file = str(Path(config['weights_file']))
+    if Path(weights_file).exists():
+        print(f"Using existing weights file: {weights_file}")
     else:
-        # No weights file specified - will compute on-the-fly (slower)
-        weights_file = None
-        print("⚠️  No weights_file or weights_dir specified - weights will be computed on-the-fly (slower)")
+        print(f"Weights file will be created: {weights_file}")
+        print(f"  (Weights will be computed once and cached for future runs)")
     
-    # Get file search pattern configuration from config file
-    date_pattern = config.get('date_pattern', r'\.(\d{8})-')  # Default to IMERG pattern if not specified
-    date_format = config.get('date_format', '%Y%m%d')
-    use_year_subdirs = config.get('use_year_subdirs', True)
-    file_glob = config.get('file_glob', '*.nc*')
+    # Display configuration summary
+    print(f"\n{'='*70}")
+    print("Configuration Summary")
+    print(f"{'='*70}")
+    print(f"Input directory:      {config['input_base_dir']}")
+    print(f"Time chunk size:      {config.get('time_chunk_size', 48)}")
+    print(f"Grid type:            {config.get('grid_type', 'auto')}")
     
-    print(f"\nFile search configuration:")
-    print(f"  Pattern:          {date_pattern}")
-    print(f"  Format:           {date_format}")
-    print(f"  Year subdirs:     {use_year_subdirs}")
-    print(f"  File glob:        {file_glob}")
-    
-    if time_subset:
-        print(f"\n⏰ Time subsetting: {time_subset} (output will be reduced by ~50%)")
-    
-    # Get spatial dimensions from config (optional - will auto-detect if not specified)
-    spatial_dimensions = config.get('spatial_dimensions', None)
-    if spatial_dimensions:
-        print(f"\n📐 Spatial dimensions (from config): {spatial_dimensions}")
+    if config.get('spatial_dimensions'):
+        print(f"Spatial dimensions:   {config['spatial_dimensions']}")
     else:
-        print(f"\n📐 Spatial dimensions: Will auto-detect from data files")
+        print(f"Spatial dimensions:   Auto-detect from data files")
     
-    # Get time dimension name from config (optional - defaults to 'time')
-    concat_dim = config.get('concat_dim', 'time')
-    if concat_dim != 'time':
-        print(f"\n⏱️  Time dimension name (from config): '{concat_dim}'")
+    print(f"\nFile search:")
+    print(f"  Pattern:            {config.get('date_pattern', 'default')}")
+    print(f"  Format:             {config.get('date_format', 'default')}")
+    print(f"  Year subdirs:       {config.get('use_year_subdirs', True)}")
+    print(f"  File glob:          {config.get('file_glob', '*.nc*')}")
+    
+    if config.get('skip_variables'):
+        print(f"\nVariable filtering:")
+        print(f"  Skip variables:     {len(config['skip_variables'])} patterns")
+        print(f"  Required dims:      {config.get('required_dimensions', 'None')}")
+    
+    if config.get('remap_variables'):
+        print(f"\nVariable remapping:   {len(config['remap_variables'])} mappings")
+        for old, new in list(config['remap_variables'].items())[:3]:
+            print(f"  {old} → {new}")
+        if len(config['remap_variables']) > 3:
+            print(f"  ... and {len(config['remap_variables']) - 3} more")
+    
+    print(f"{'='*70}")
     
     # Prepare preprocessing function and kwargs for new flexible approach
     preprocessing_func = None
     preprocessing_kwargs = None
-    if time_subset:
-        preprocessing_func = subset_time_by_minute
-        preprocessing_kwargs = {'time_subset': time_subset}
-        print(f"✨ Using flexible preprocessing: subset_time_by_minute with time_subset='{time_subset}'")
     
     # Run the processing with config dictionary
     process_to_healpix_zarr(
