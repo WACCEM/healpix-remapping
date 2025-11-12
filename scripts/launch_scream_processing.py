@@ -148,20 +148,27 @@ def main():
     if overwrite:
         print("⚠️  Overwrite mode enabled - existing files will be replaced")
     
-    # Determine weights file path
-    # Priority: 1) weights_file in config (explicit), 2) weights_dir + auto-generated name (backward compat)
-    if 'weights_file' in config and config['weights_file']:
-        # Use explicitly specified weights file from config
-        weights_file = str(Path(config['weights_file']))
-        print(f"Using explicit weights file from config: {weights_file}")
-    # elif 'weights_dir' in config:
-    #     # Backward compatibility: auto-generate weights filename from weights_dir
-    #     weights_file = str(Path(config['weights_dir']) / f"SCREAM_ne1024pg2_to_healpix_z{zoom}_weights.nc")
-    #     print(f"Auto-generated weights file from weights_dir: {weights_file}")
+    # Require weights file path for efficient caching
+    if 'weights_file' not in config or not config['weights_file']:
+        print("\n" + "="*70)
+        print("ERROR: weights_file must be specified in config")
+        print("="*70)
+        print("The weights file is required for efficient processing.")
+        print("Add this to your config YAML:")
+        print("")
+        print("weights_file: \"/path/to/weights/scream_to_healpix_z{zoom}_weights.nc\"")
+        print("")
+        print("Note: The file will be created automatically on first run if it doesn't exist,")
+        print("      then reused on subsequent runs for much faster processing.")
+        print("="*70)
+        sys.exit(1)
+    
+    weights_file = str(Path(config['weights_file']))
+    if Path(weights_file).exists():
+        print(f"Using existing weights file: {weights_file}")
     else:
-        # No weights file specified - will compute on-the-fly (slower)
-        weights_file = None
-        print("⚠️  No weights_file or weights_dir specified - weights will be computed on-the-fly (slower)")
+        print(f"Weights file will be created: {weights_file}")
+        print(f"  (Weights will be computed once and cached for future runs)")
     
     # Display configuration summary
     print(f"\n{'='*70}")
@@ -187,12 +194,12 @@ def main():
         print(f"  Skip variables:     {len(config['skip_variables'])} patterns")
         print(f"  Required dims:      {config.get('required_dimensions', 'None')}")
     
-    if config.get('var_rename_map'):
-        print(f"\nVariable renaming:    {len(config['var_rename_map'])} mappings")
-        for old, new in list(config['var_rename_map'].items())[:3]:
+    if config.get('remap_variables'):
+        print(f"\nVariable remapping:   {len(config['remap_variables'])} mappings")
+        for old, new in list(config['remap_variables'].items())[:3]:
             print(f"  {old} → {new}")
-        if len(config['var_rename_map']) > 3:
-            print(f"  ... and {len(config['var_rename_map']) - 3} more")
+        if len(config['remap_variables']) > 3:
+            print(f"  ... and {len(config['remap_variables']) - 3} more")
     
     print(f"{'='*70}")
     

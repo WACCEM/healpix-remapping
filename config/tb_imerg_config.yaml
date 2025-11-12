@@ -12,8 +12,8 @@ weights_dir: "/pscratch/sd/w/wcmca1/GPM/weights/"
 # Filename format: merg_YYYYMMDDhh_10km-pixel.nc (e.g., merg_2020010100_10km-pixel.nc)
 date_pattern: "_(\\d{10})_"    # Regex to extract YYYYMMDDhh (10 digits between underscores)
 date_format: "%Y%m%d%H"        # strptime format: YYYY=year, MM=month, DD=day, HH=hour
-use_year_subdirs: true         # Files organized in yearly subdirectories (YYYY/)
 file_glob: "merg_*.nc"         # Glob pattern to match files (merg_*.nc)
+use_year_subdirs: true         # Files organized in yearly subdirectories (YYYY/)
 
 # Processing parameters  
 default_zoom: 9

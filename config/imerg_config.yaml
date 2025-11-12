@@ -12,8 +12,8 @@ weights_dir: "/pscratch/sd/w/wcmca1/GPM/weights/"
 # Filename format: 3B-HHR.MS.MRG.3IMERG.YYYYMMDD-SHHMMSS-EHHMMSS.mmmm.V07B.HDF5.nc4
 date_pattern: "\\.(\\d{8})-"    # Regex to extract YYYYMMDD (8 digits between dot and hyphen)
 date_format: "%Y%m%d"           # strptime format: YYYY=year, MM=month, DD=day
-use_year_subdirs: true          # Files organized in yearly subdirectories (YYYY/)
 file_glob: "3B-HHR.MS.MRG.3IMERG.*.nc4"  # Glob pattern to match IMERG files
+use_year_subdirs: true          # Files organized in yearly subdirectories (YYYY/)
 
 # Processing parameters  
 default_zoom: 9

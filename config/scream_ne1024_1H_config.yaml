@@ -6,8 +6,12 @@ input_base_dir: "/global/cfs/cdirs/e3sm/beydoun/ne1024pg2_ne1024pg2.F2010-SCREAM
 output_base_dir: "/pscratch/sd/w/wcmca1/hackathon/healpix/scream_cess2/"
 output_basename: "SCREAMv1"
 
-# Weights file configuration
-# Option 1: Specify exact weights file (recommended for multi-resolution datasets)
+# Weights file configuration (REQUIRED)
+# Specify the path where remapping weights will be stored
+# - If file exists: Weights are loaded for fast remapping
+# - If file doesn't exist: Weights are computed once and saved for reuse
+# - Subsequent runs reuse cached weights for much faster processing
+# Example: "/path/to/weights/scream_ne1024pg2_to_healpix_z9_weights.nc"
 weights_file: "/pscratch/sd/w/wcmca1/hackathon/healpix/scream_cess2/weights/scream_ne1024pg2_to_healpix_z9_weights.nc"
 
 # File search pattern configuration
@@ -15,8 +19,8 @@ weights_file: "/pscratch/sd/w/wcmca1/hackathon/healpix/scream_cess2/weights/scre
 # Filename format: 1hi.INSTANT.nhours_x1.YYYY-MM-DD-xxxxx.nc (e.g., 1hi.INSTANT.nhours_x1.2019-08-01-00000.nc)
 date_pattern: "\\.(\\d{4}-\\d{2}-\\d{2})-"   # Regex to extract YYYY-MM-DD
 date_format: "%Y-%m-%d"        # strptime format: YYYY=year, MM=month, DD=day
-use_year_subdirs: False         # Files organized in yearly subdirectories (YYYY/)
 file_glob: "1hi.INSTANT.nhours_x1.*.nc"         # Glob pattern to match files (merg_*.nc)
+use_year_subdirs: False         # Files organized in yearly subdirectories (YYYY/)
 
 # Processing parameters  
 default_zoom: 9
@@ -26,7 +30,7 @@ original_time_suffix: "1H"  # Time resolution of source data for output filename
 convert_time: True   # Convert cftime.DatetimeJulian to standard datetime64 for pandas compatibility
 
 # Variables to remap and rename
-var_rename_map:
+remap_variables:
   LW_flux_up_at_model_top: rlut
   precip_total_surf_mass_flux: pr
   diag_equiv_reflectivity_vert_max: max_reflectivity

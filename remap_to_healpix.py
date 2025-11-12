@@ -167,7 +167,7 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
         - file_glob: File glob pattern (default: '*.nc*')
         - skip_variables: List of variable patterns to skip (supports wildcards)
         - required_dimensions: List of required dimension combinations
-        - var_rename_map: Dict mapping input variable names to output names
+        - remap_variables: Dict mapping input variable names to output names
     
     Returns:
     --------
@@ -184,7 +184,7 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
         'spatial_dimensions': {'ncol': -1},
         'skip_variables': ['*_bounds', 'time_bnds'],
         'required_dimensions': [['time', 'ncol']],
-        'var_rename_map': {'precip_total_surf_mass_flux': 'pr'}
+        'remap_variables': {'precip_total_surf_mass_flux': 'pr'}
     }
     process_to_healpix_zarr(
         start_date=datetime(2020, 1, 1),
@@ -217,7 +217,7 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
     file_glob = config.get('file_glob', '*.nc*')
     skip_variables = config.get('skip_variables', None)
     required_dimensions = config.get('required_dimensions', None)
-    var_rename_map = config.get('var_rename_map', None)
+    remap_variables = config.get('remap_variables', None)
     
     logger.info("="*70)
     logger.info("Configuration Summary")
@@ -231,8 +231,8 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
         logger.info(f"Skip variables: {skip_variables}")
     if required_dimensions:
         logger.info(f"Required dimensions: {required_dimensions}")
-    if var_rename_map:
-        logger.info(f"Variable rename map: {var_rename_map}")
+    if remap_variables:
+        logger.info(f"Remap variables: {remap_variables}")
     logger.info("="*70)
     
     # Get file list for date range FIRST (needed for auto-detection)
@@ -330,13 +330,13 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
         logger.info(f"Variables: {list(ds_remap.data_vars)}")
         
         # Apply variable subsetting and renaming if requested
-        if var_rename_map:
+        if remap_variables:
             logger.info("🔄 Step 3b: Subsetting and renaming variables...")
             step_start = time.time()
             
-            # Subset dataset to include variables in var_rename_map + passthrough variables
+            # Subset dataset to include variables in remap_variables + passthrough variables
             # This automatically includes coordinate variables (time, cell, lev, etc.)
-            vars_to_keep = [var for var in var_rename_map.keys() if var in ds_remap.data_vars]
+            vars_to_keep = [var for var in remap_variables.keys() if var in ds_remap.data_vars]
             
             # Also keep passthrough variables (non-remapped variables like vertical coordinates)
             passthrough_variables = config.get('passthrough_variables', [])
@@ -347,8 +347,8 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
                     logger.info(f"   Including {len(passthrough_to_keep)} passthrough variable(s): {passthrough_to_keep}")
             
             if not vars_to_keep:
-                logger.warning(f"   None of the variables in var_rename_map found in dataset")
-                logger.warning(f"   Requested: {list(var_rename_map.keys())}")
+                logger.warning(f"   None of the variables in remap_variables found in dataset")
+                logger.warning(f"   Requested: {list(remap_variables.keys())}")
                 logger.warning(f"   Available: {list(ds_remap.data_vars)}")
             else:
                 logger.info(f"   Subsetting to {len(vars_to_keep)} variable(s): {vars_to_keep}")
@@ -356,7 +356,7 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
                 
                 # Rename the subsetted variables (but not passthrough variables)
                 renamed_vars = []
-                for old_name, new_name in var_rename_map.items():
+                for old_name, new_name in remap_variables.items():
                     if old_name in ds_remap.data_vars:
                         ds_remap = ds_remap.rename({old_name: new_name})
                         renamed_vars.append(f"{old_name} → {new_name}")
