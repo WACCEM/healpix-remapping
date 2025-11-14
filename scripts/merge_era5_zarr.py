@@ -14,11 +14,17 @@ Example usage:
         era5_3d_zoom8_20200101_20200131.zarr \
         -o era5_combined_zoom8_20200101_20200131.zarr
     
-    # Merge with validation checks
+    # Merge with validation
     python scripts/merge_era5_zarr.py file_2d.zarr file_3d.zarr -o combined.zarr --validate
     
     # Overwrite existing output
     python scripts/merge_era5_zarr.py file_2d.zarr file_3d.zarr -o combined.zarr --overwrite
+    
+    # Use more workers for faster parallel writing
+    python scripts/merge_era5_zarr.py file_2d.zarr file_3d.zarr -o combined.zarr --n-workers 16
+    
+    # Disable parallel writing (single-threaded)
+    python scripts/merge_era5_zarr.py file_2d.zarr file_3d.zarr -o combined.zarr --no-parallel
 """
 
 import os
@@ -26,7 +32,13 @@ import sys
 import argparse
 import xarray as xr
 from pathlib import Path
+import shutil
+import traceback
 
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from src.utilities import setup_dask_client
+from dask.diagnostics import ProgressBar
 
 def parse_args():
     """Parse command line arguments."""
@@ -35,14 +47,17 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Merge 2D and 3D files
+  # Merge 2D and 3D files (parallel writing with 8 workers)
   %(prog)s era5_2d_zoom8.zarr era5_3d_zoom8.zarr -o era5_combined_zoom8.zarr
   
   # Merge with validation
   %(prog)s file_2d.zarr file_3d.zarr -o combined.zarr --validate
   
-  # Overwrite existing output
-  %(prog)s file_2d.zarr file_3d.zarr -o combined.zarr --overwrite
+  # Use 16 workers for faster writing
+  %(prog)s file_2d.zarr file_3d.zarr -o combined.zarr --n-workers 16
+  
+  # Disable parallel writing
+  %(prog)s file_2d.zarr file_3d.zarr -o combined.zarr --no-parallel
         """
     )
     
@@ -58,6 +73,10 @@ Examples:
                        help='Overwrite output if it already exists')
     parser.add_argument('--no-chunking', action='store_true',
                        help='Disable rechunking of merged dataset')
+    parser.add_argument('--n-workers', type=int, default=8,
+                       help='Number of Dask workers for parallel writing (default: 8)')
+    parser.add_argument('--no-parallel', action='store_true',
+                       help='Disable parallel writing (use single-threaded)')
     
     return parser.parse_args()
 
@@ -87,7 +106,7 @@ def validate_datasets(ds_2d, ds_3d):
     print("-" * 60)
     
     # Check 1: Compatible time coordinates
-    if 'time' not in ds_2d.dims or 'time' not in ds_3d.dims:
+    if 'time' not in ds_2d.sizes or 'time' not in ds_3d.sizes:
         raise ValueError("Both datasets must have 'time' dimension")
     
     # Check time ranges
@@ -111,7 +130,7 @@ def validate_datasets(ds_2d, ds_3d):
         print("  Merge will use outer join (union of times)")
     
     # Check 2: Compatible spatial coordinates (cell dimension for HEALPix)
-    if 'cell' not in ds_2d.dims or 'cell' not in ds_3d.dims:
+    if 'cell' not in ds_2d.sizes or 'cell' not in ds_3d.sizes:
         raise ValueError("Both datasets must have 'cell' dimension (HEALPix)")
     
     if len(ds_2d.cell) != len(ds_3d.cell):
@@ -138,7 +157,7 @@ def validate_datasets(ds_2d, ds_3d):
     print(f"  3D variables ({len(vars_3d)}): {', '.join(sorted(vars_3d))}")
     
     # Check 4: Check for pressure level dimension in 3D
-    if 'lev' in ds_3d.dims:
+    if 'lev' in ds_3d.sizes:
         print(f"✓ 3D dataset has pressure levels: {len(ds_3d.lev)} levels")
     else:
         print("WARNING: 3D dataset does not have 'lev' dimension")
@@ -172,7 +191,7 @@ def merge_datasets(ds_2d, ds_3d, rechunk=True):
     # compat='override' allows merging even with slight coordinate differences
     ds_merged = xr.merge([ds_2d, ds_3d], compat='override', join='outer')
     
-    print(f"Merged dataset dimensions: {dict(ds_merged.dims)}")
+    print(f"Merged dataset dimensions: {dict(ds_merged.sizes)}")
     print(f"Total variables: {len(ds_merged.data_vars)}")
     
     # Rechunk for optimal Zarr storage
@@ -184,7 +203,7 @@ def merge_datasets(ds_2d, ds_3d, rechunk=True):
         }
         
         # Add pressure level chunking if present
-        if 'lev' in ds_merged.dims:
+        if 'lev' in ds_merged.sizes:
             chunks['lev'] = -1  # Keep all levels together
         
         ds_merged = ds_merged.chunk(chunks)
@@ -199,6 +218,13 @@ def main():
     
     print("ERA5 HEALPix Zarr Merge Utility")
     print("=" * 60)
+    
+    # Setup Dask client for parallel writing (unless disabled)
+    client = None
+    if not args.no_parallel:
+        print(f"\n🚀 Setting up Dask client with {args.n_workers} workers...")
+        client = setup_dask_client(n_workers=args.n_workers, threads_per_worker=1)
+        print(f"   Dashboard: {client.dashboard_link}")
     
     # Check input files exist
     if not os.path.exists(args.file_2d):
@@ -224,12 +250,12 @@ def main():
         # Open datasets
         print("\nOpening 2D dataset...")
         ds_2d = xr.open_zarr(args.file_2d)
-        print(f"  Dimensions: {dict(ds_2d.dims)}")
+        print(f"  Dimensions: {dict(ds_2d.sizes)}")
         print(f"  Variables: {list(ds_2d.data_vars)}")
         
         print("\nOpening 3D dataset...")
         ds_3d = xr.open_zarr(args.file_3d)
-        print(f"  Dimensions: {dict(ds_3d.dims)}")
+        print(f"  Dimensions: {dict(ds_3d.sizes)}")
         print(f"  Variables: {list(ds_3d.data_vars)}")
         
         # Validate if requested
@@ -244,27 +270,47 @@ def main():
         
         # Remove output if it exists (for overwrite)
         if os.path.exists(args.output) and args.overwrite:
-            import shutil
             print(f"Removing existing output: {args.output}")
             shutil.rmtree(args.output)
         
-        # Write to Zarr
-        ds_merged.to_zarr(args.output, mode='w')
+        # Write to Zarr with parallel execution if enabled
+        if client:
+            print("\n💾 Writing merged dataset to Zarr (parallel mode)...")
+            print(f"   Dataset size: {ds_merged.nbytes / 1024**3:.2f} GB")
+            
+            # Create delayed write task
+            write_task = ds_merged.to_zarr(args.output, mode='w', compute=False, consolidated=True)
+            
+            # Execute with progress bar
+            print("   Executing parallel write...")
+            with ProgressBar():
+                write_task.compute()
+        else:
+            print("\n💾 Writing merged dataset to Zarr (sequential mode)...")
+            ds_merged.to_zarr(args.output, mode='w', consolidated=True)
         
         print("\n" + "=" * 60)
         print("Merge completed successfully!")
         print(f"Output written to: {args.output}")
         print(f"Total variables: {len(ds_merged.data_vars)}")
-        print(f"Dimensions: {dict(ds_merged.dims)}")
+        print(f"Dimensions: {dict(ds_merged.sizes)}")
         
         return 0
         
     except Exception as e:
         print("\n" + "=" * 60)
         print(f"ERROR during merge: {e}")
-        import traceback
         traceback.print_exc()
         return 1
+    
+    finally:
+        # Clean up Dask client
+        if client:
+            print("\n🔄 Shutting down Dask cluster...")
+            try:
+                client.close()
+            except:
+                pass
 
 
 if __name__ == '__main__':
