@@ -34,14 +34,21 @@ def monitor_zarr_write_progress(output_path, expected_chunks, check_interval=30)
         Expected number of chunks (time_chunks, spatial_chunks)
     check_interval : int
         Check interval in seconds
+        
+    Returns:
+    --------
+    tuple : (monitor_thread, stop_event)
+        Thread object and Event to signal stopping
     """
+    
+    stop_event = threading.Event()
     
     def progress_monitor():
         start_time = time.time()
         last_file_count = 0
         last_update_time = start_time
         
-        while True:
+        while not stop_event.is_set():
             try:
                 current_time = time.time()
                 elapsed = current_time - start_time
@@ -71,16 +78,18 @@ def monitor_zarr_write_progress(output_path, expected_chunks, check_interval=30)
                         logger.info(f"💓 Zarr write heartbeat: {file_count} chunks | {elapsed/60:.1f}min elapsed | Still processing...")
                         last_update_time = current_time
                 
-                time.sleep(check_interval)
+                # Sleep with check for stop event
+                stop_event.wait(check_interval)
                 
             except Exception as e:
                 logger.debug(f"Progress monitor error: {e}")
-                time.sleep(check_interval)
+                if not stop_event.is_set():
+                    stop_event.wait(check_interval)
     
     # Start monitoring thread
     monitor_thread = threading.Thread(target=progress_monitor, daemon=True)
     monitor_thread.start()
-    return monitor_thread
+    return monitor_thread, stop_event
 
 
 def write_zarr_with_monitoring(ds_remap, output_zarr, time_chunk_size=48, zoom=9, overwrite=False):
@@ -180,7 +189,7 @@ def write_zarr_with_monitoring(ds_remap, output_zarr, time_chunk_size=48, zoom=9
     logger.info(f"Total write workload: ~{total_chunks * chunk_size_mb / 1024:.1f} GB")
     
     # Start progress monitoring in background
-    progress_monitor = monitor_zarr_write_progress(output_path, (time_chunks, spatial_chunks))
+    progress_monitor, stop_event = monitor_zarr_write_progress(output_path, (time_chunks, spatial_chunks))
     
     try:
         # Use delayed computation with progress bar and profiling
@@ -217,6 +226,10 @@ def write_zarr_with_monitoring(ds_remap, output_zarr, time_chunk_size=48, zoom=9
     except Exception as e:
         logger.error(f"Error during Zarr write: {e}")
         raise
+    finally:
+        # Stop progress monitor gracefully
+        stop_event.set()
+        progress_monitor.join(timeout=2)  # Wait up to 2 seconds for thread to finish
     
     zarr_time = time.time() - zarr_start_time
     logger.info("✅ Zarr write completed successfully!")

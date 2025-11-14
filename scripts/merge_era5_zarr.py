@@ -34,11 +34,18 @@ import xarray as xr
 from pathlib import Path
 import shutil
 import traceback
+import time
+import logging
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.utilities import setup_dask_client
+from src.zarr_tools import monitor_zarr_write_progress
 from dask.diagnostics import ProgressBar
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def parse_args():
     """Parse command line arguments."""
@@ -71,8 +78,8 @@ Examples:
                        help='Perform validation checks before merging')
     parser.add_argument('--overwrite', action='store_true',
                        help='Overwrite output if it already exists')
-    parser.add_argument('--no-chunking', action='store_true',
-                       help='Disable rechunking of merged dataset')
+    parser.add_argument('--rechunk', action='store_true',
+                       help='Enable rechunking of merged dataset for optimal storage')
     parser.add_argument('--n-workers', type=int, default=8,
                        help='Number of Dask workers for parallel writing (default: 8)')
     parser.add_argument('--no-parallel', action='store_true',
@@ -157,17 +164,17 @@ def validate_datasets(ds_2d, ds_3d):
     print(f"  3D variables ({len(vars_3d)}): {', '.join(sorted(vars_3d))}")
     
     # Check 4: Check for pressure level dimension in 3D
-    if 'lev' in ds_3d.sizes:
-        print(f"✓ 3D dataset has pressure levels: {len(ds_3d.lev)} levels")
+    if 'level' in ds_3d.sizes:
+        print(f"✓ 3D dataset has pressure levels: {len(ds_3d.level)} levels")
     else:
-        print("WARNING: 3D dataset does not have 'lev' dimension")
+        print("WARNING: 3D dataset does not have 'level' dimension")
     
     print("-" * 60)
     print("Validation passed!\n")
     return True
 
 
-def merge_datasets(ds_2d, ds_3d, rechunk=True):
+def merge_datasets(ds_2d, ds_3d, rechunk=False):
     """
     Merge 2D and 3D datasets.
     
@@ -252,18 +259,22 @@ def main():
         ds_2d = xr.open_zarr(args.file_2d)
         print(f"  Dimensions: {dict(ds_2d.sizes)}")
         print(f"  Variables: {list(ds_2d.data_vars)}")
+        if hasattr(ds_2d, 'chunks') and ds_2d.chunks:
+            print(f"  Chunk sizes: {dict(ds_2d.chunks)}")
         
         print("\nOpening 3D dataset...")
         ds_3d = xr.open_zarr(args.file_3d)
         print(f"  Dimensions: {dict(ds_3d.sizes)}")
         print(f"  Variables: {list(ds_3d.data_vars)}")
+        if hasattr(ds_3d, 'chunks') and ds_3d.chunks:
+            print(f"  Chunk sizes: {dict(ds_3d.chunks)}")
         
         # Validate if requested
         if args.validate:
             validate_datasets(ds_2d, ds_3d)
-        
-        # Merge datasets
-        ds_merged = merge_datasets(ds_2d, ds_3d, rechunk=not args.no_chunking)
+
+        # Merge datasets (rechunking disabled by default)
+        ds_merged = merge_datasets(ds_2d, ds_3d, rechunk=args.rechunk)
         
         # Write output
         print(f"\nWriting merged dataset to: {args.output}")
@@ -278,19 +289,66 @@ def main():
             print("\n💾 Writing merged dataset to Zarr (parallel mode)...")
             print(f"   Dataset size: {ds_merged.nbytes / 1024**3:.2f} GB")
             
+            # Calculate expected chunks for progress monitoring
+            time_chunks = len(ds_merged.chunks.get('time', [1]))
+            cell_chunks = len(ds_merged.chunks.get('cell', [1]))
+            lev_chunks = len(ds_merged.chunks.get('lev', [1])) if 'lev' in ds_merged.chunks else 1
+            total_chunks = time_chunks * cell_chunks * lev_chunks
+            
+            print(f"   Chunks: {time_chunks} time × {cell_chunks} cell × {lev_chunks} level = {total_chunks} total")
+            
+            # Calculate approximate chunk size
+            if total_chunks > 0:
+                chunk_size_mb = (ds_merged.nbytes / total_chunks) / 1024**2
+                print(f"   Approximate chunk size: {chunk_size_mb:.1f} MB")
+            
             # Create delayed write task
             write_task = ds_merged.to_zarr(args.output, mode='w', compute=False, consolidated=True)
             
-            # Execute with progress bar
-            print("   Executing parallel write...")
-            with ProgressBar():
-                write_task.compute()
+            # Start background progress monitoring
+            output_path = Path(args.output)
+            print("\n📈 Starting parallel write with progress monitoring...")
+            print("   Progress updates every 30 seconds")
+            
+            # Start progress monitor in background
+            progress_monitor, stop_event = monitor_zarr_write_progress(
+                output_path, 
+                (time_chunks, cell_chunks),
+                check_interval=30
+            )
+            
+            # Execute with progress bar and timing
+            write_start_time = time.time()
+            try:
+                with ProgressBar():
+                    write_task.compute()
+            except Exception as e:
+                logger.error(f"Error during parallel write: {e}")
+                raise
+            finally:
+                # Stop progress monitor gracefully
+                stop_event.set()
+                progress_monitor.join(timeout=2)
+            
+            write_elapsed = time.time() - write_start_time
+            write_rate = (ds_merged.nbytes / 1024**3) / write_elapsed if write_elapsed > 0 else 0
+            print(f"\n✅ Write completed in {write_elapsed/60:.1f} minutes ({write_elapsed:.1f}s)")
+            print(f"   Write throughput: {write_rate:.2f} GB/s")
         else:
             print("\n💾 Writing merged dataset to Zarr (sequential mode)...")
+            print(f"   Dataset size: {ds_merged.nbytes / 1024**3:.2f} GB")
+            print("   Note: Sequential mode may be slower. Use parallel mode (default) for better performance.")
+            
+            write_start_time = time.time()
             ds_merged.to_zarr(args.output, mode='w', consolidated=True)
+            write_elapsed = time.time() - write_start_time
+            write_rate = (ds_merged.nbytes / 1024**3) / write_elapsed if write_elapsed > 0 else 0
+            
+            print(f"\n✅ Write completed in {write_elapsed/60:.1f} minutes ({write_elapsed:.1f}s)")
+            print(f"   Write throughput: {write_rate:.2f} GB/s")
         
         print("\n" + "=" * 60)
-        print("Merge completed successfully!")
+        print("✅ Merge completed successfully!")
         print(f"Output written to: {args.output}")
         print(f"Total variables: {len(ds_merged.data_vars)}")
         print(f"Dimensions: {dict(ds_merged.sizes)}")
@@ -299,7 +357,7 @@ def main():
         
     except Exception as e:
         print("\n" + "=" * 60)
-        print(f"ERROR during merge: {e}")
+        print(f"❌ ERROR during merge: {e}")
         traceback.print_exc()
         return 1
     
