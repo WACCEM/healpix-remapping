@@ -16,13 +16,6 @@ convert_time: true         # Convert to datetime64
 # This will be generated on first run and cached
 weights_file: "/pscratch/sd/w/wcmca1/hackathon/healpix/era5/weights/era5_z{zoom}_weights.nc"
 
-# Grid configuration - ERA5 is regular lat/lon grid
-grid_type: 'latlon_1d'  # Regular 1D lat/lon coordinates
-x_dimname: "longitude"
-y_dimname: "latitude"
-x_coordname: "longitude"
-y_coordname: "latitude"
-
 # ERA5 variables to process
 # Each variable is in a separate file with specific codes
 # Format: var_code, var_name (in file), grid_type (sc=scalar, uv=vector)
@@ -115,7 +108,12 @@ passthrough_variables:
 use_monthly_dirs: true  # Use YYYYMM directories (not YYYY)
 file_template: "e5.oper.an.pl.{var_code}.ll025{grid_type}.{date_start}_{date_end}.nc"
 
-# Spatial dimensions (will be auto-detected, but specified for clarity)
+# Grid configuration - ERA5 is regular lat/lon grid
+grid_type: 'latlon_1d'  # Regular 1D lat/lon coordinates
+x_dimname: "longitude"
+y_dimname: "latitude"
+x_coordname: "longitude"
+y_coordname: "latitude"
 spatial_dimensions:
   latitude: -1   # Keep full latitude dimension
   longitude: -1  # Keep full longitude dimension

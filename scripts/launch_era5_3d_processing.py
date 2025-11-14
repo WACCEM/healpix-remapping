@@ -218,7 +218,7 @@ def main():
     config.update(additional_config)
     
     print("\n" + "="*80)
-    print("Starting ERA5 to HEALPix processing...")
+    print("Starting ERA5 3D to HEALPix processing...")
     print("="*80 + "\n")
     
     # Run processing
