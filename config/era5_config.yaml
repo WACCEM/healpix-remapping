@@ -1,0 +1,136 @@
+# ERA5 Configuration for HEALPix Remapping
+# ERA5 3D atmospheric data on pressure levels
+
+# Input/Output paths
+input_base_dir: "/global/cfs/projectdirs/m3522/cmip6/ERA5/e5.oper.an.pl"
+output_base_dir: "/pscratch/sd/w/wcmca1/hackathon/healpix/era5"
+output_basename: "era5_3d"
+
+# Processing parameters
+default_zoom: 8
+time_chunk_size: 24        # 24 hours per chunk (matches file structure)
+time_average: null         # No averaging (keep hourly)
+convert_time: true         # Convert to datetime64
+
+# Mandatory weights file path
+# This will be generated on first run and cached
+weights_file: "/pscratch/sd/w/wcmca1/hackathon/healpix/era5/weights/era5_z{zoom}_weights.nc"
+
+# Grid configuration - ERA5 is regular lat/lon grid
+grid_type: 'latlon_1d'  # Regular 1D lat/lon coordinates
+x_dimname: "longitude"
+y_dimname: "latitude"
+x_coordname: "longitude"
+y_coordname: "latitude"
+
+# ERA5 variables to process
+# Each variable is in a separate file with specific codes
+# Format: var_code, var_name (in file), grid_type (sc=scalar, uv=vector)
+era5_variables:
+  # Thermodynamic variables (scalar grid)
+  - var_code: "128_130_t"
+    var_name: "T"
+    output_name: "ta"
+    grid_type: "sc"
+    long_name: "Air Temperature"
+  
+  - var_code: "128_133_q"
+    var_name: "Q"
+    output_name: "hus"
+    grid_type: "sc"
+    long_name: "Specific Humidity"
+  
+  - var_code: "128_157_r"
+    var_name: "R"
+    output_name: "hur"
+    grid_type: "sc"
+    long_name: "Relative Humidity"
+
+  - var_code: "128_129_z"
+    var_name: "Z"
+    output_name: "zg"
+    grid_type: "sc"
+    long_name: "Geopotential"
+  
+  # Wind components (vector grid - may have slight offset from scalar)
+  - var_code: "128_131_u"
+    var_name: "U"
+    output_name: "ua"
+    grid_type: "uv"
+    long_name: "Zonal Wind"
+  
+  - var_code: "128_132_v"
+    var_name: "V"
+    output_name: "va"
+    grid_type: "uv"
+    long_name: "Meridional Wind"
+  
+  # Vertical velocity
+  - var_code: "128_135_w"
+    var_name: "W"
+    output_name: "omega"
+    grid_type: "sc"
+    long_name: "Vertical Velocity"
+  
+  # Cloud variables
+  # - var_code: "128_246_clwc"
+  #   var_name: "CLWC"
+  #   output_name: "clw"
+  #   grid_type: "sc"
+  #   long_name: "Cloud Liquid Water Content"
+  
+  # - var_code: "128_247_ciwc"
+  #   var_name: "CIWC"
+  #   output_name: "cli"
+  #   grid_type: "sc"
+  #   long_name: "Cloud Ice Water Content"
+  
+  # - var_code: "128_248_cc"
+  #   var_name: "CC"
+  #   output_name: "cl"
+  #   grid_type: "sc"
+  #   long_name: "Cloud Fraction"
+
+# Variable remapping (input_name: output_name)
+# Note: ERA5 uses uppercase variable names in files
+remap_variables:
+  T: "ta"      # Temperature
+  Q: "hus"     # Specific humidity
+  R: "hur"     # Relative humidity
+  Z: "zg"      # Geopotential
+  U: "ua"      # Zonal wind
+  V: "va"      # Meridional wind
+  W: "omega"   # Vertical velocity
+  # CLWC: "clw"  # Cloud liquid water
+  # CIWC: "cli"  # Cloud ice water
+  # CC: "cl"     # Cloud fraction
+
+# Pass-through variables (not remapped)
+passthrough_variables:
+  - level      # Pressure levels
+
+# ERA5 file organization
+# Files are in monthly directories (YYYYMM) with daily files
+# Each file contains 24 hours: YYYYMMDD00_YYYYMMDD23
+use_monthly_dirs: true  # Use YYYYMM directories (not YYYY)
+file_template: "e5.oper.an.pl.{var_code}.ll025{grid_type}.{date_start}_{date_end}.nc"
+
+# Spatial dimensions (will be auto-detected, but specified for clarity)
+spatial_dimensions:
+  latitude: -1   # Keep full latitude dimension
+  longitude: -1  # Keep full longitude dimension
+
+# Time dimension
+concat_dim: "time"
+
+# Dask configuration
+dask:
+  n_workers: 16
+  threads_per_worker: 1
+  # memory_limit: auto  # Auto-calculated based on system memory
+
+# Notes:
+# - ERA5 data has 37 pressure levels (1000 to 1 hPa)
+# - Grid resolution: 0.25° × 0.25° (721 lat × 1440 lon)
+# - Time resolution: hourly (24 steps per file)
+# - Each variable in separate files organized by month

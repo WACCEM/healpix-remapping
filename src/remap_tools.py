@@ -204,7 +204,7 @@ def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='
     
     # Add resolution info for regular grids
     if grid_type == 'latlon_1d':
-        weights.attrs['source_resolution'] = f"~{np.diff(ds.lon).mean():.4f}° x {np.diff(ds.lat).mean():.4f}°"
+        weights.attrs['source_resolution'] = f"~{np.diff(ds[x_coordname]).mean():.4f}° x {np.diff(ds[y_coordname]).mean():.4f}°"
     
     # Save weights if requested
     if weights_file is not None:

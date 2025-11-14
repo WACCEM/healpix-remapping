@@ -528,8 +528,133 @@ def temporal_average(ds, time_average, convert_time=False):
     return ds_avg
 
 
+def get_era5_input_files(start_date, end_date, base_dir=None, variables=None,
+                        file_template='e5.oper.an.pl.{var_code}_{var_name}.ll025{grid_type}.{date_start}_{date_end}.nc'):
+    """
+    Get ERA5 files for specified date range and variables.
+    
+    ERA5 data is organized with:
+    - Monthly directories: YYYYMM/
+    - Daily files (24 hours per file): YYYYMMDD00_YYYYMMDD23
+    - Each variable in separate files
+    
+    Parameters:
+    -----------
+    start_date : datetime
+        Start date (inclusive)
+    end_date : datetime
+        End date (inclusive)
+    base_dir : str
+        Base directory (e.g., '/global/cfs/projectdirs/m3522/cmip6/ERA5/e5.oper.an.pl')
+    variables : list of dict
+        List of variable specifications. Each dict should contain:
+        - 'var_code': Variable code (e.g., '128_130_t')
+        - 'var_name': Variable short name (e.g., 't')
+        - 'grid_type': Grid type suffix (e.g., 'sc' or 'uv')
+        Example: [{'var_code': '128_130_t', 'var_name': 't', 'grid_type': 'sc'}]
+    file_template : str, optional
+        Template for filename pattern. Default matches ERA5 format.
+        
+    Returns:
+    --------
+    dict : Dictionary mapping variable names to sorted lists of file paths
+           Format: {'t': [file1, file2, ...], 'u': [file1, file2, ...]}
+    
+    Examples:
+    ---------
+    # Get temperature and humidity for January 2020
+    variables = [
+        {'var_code': '128_130_t', 'var_name': 't', 'grid_type': 'sc'},
+        {'var_code': '128_133_q', 'var_name': 'q', 'grid_type': 'sc'}
+    ]
+    files = get_era5_input_files(
+        datetime(2020, 1, 1), datetime(2020, 1, 31),
+        base_dir='/global/cfs/projectdirs/m3522/cmip6/ERA5/e5.oper.an.pl',
+        variables=variables
+    )
+    # Returns: {'t': [file1, file2, ...], 'q': [file1, file2, ...]}
+    """
+    
+    if variables is None or len(variables) == 0:
+        raise ValueError("Must specify at least one variable")
+    
+    # Dictionary to store files for each variable
+    variable_files = {var['var_name']: [] for var in variables}
+    
+    # Generate list of months to search
+    current_date = start_date.replace(day=1)  # Start of first month
+    end_month = end_date.replace(day=1)
+    
+    months_to_search = []
+    while current_date <= end_month:
+        months_to_search.append(current_date.strftime('%Y%m'))
+        # Move to next month
+        if current_date.month == 12:
+            current_date = current_date.replace(year=current_date.year + 1, month=1)
+        else:
+            current_date = current_date.replace(month=current_date.month + 1)
+    
+    logger.info(f"Searching ERA5 data in {len(months_to_search)} months: {months_to_search[0]} to {months_to_search[-1]}")
+    logger.info(f"Looking for {len(variables)} variables: {[v['var_name'] for v in variables]}")
+    
+    # Search each month directory
+    for month_dir in months_to_search:
+        month_path = Path(base_dir) / month_dir
+        
+        if not month_path.exists():
+            logger.warning(f"Month directory not found: {month_path}")
+            continue
+        
+        # For each variable, find matching files in this month
+        for var_spec in variables:
+            var_name = var_spec['var_name']
+            
+            # Build file pattern for this variable
+            # Pattern: e5.oper.an.pl.128_130_t.ll025sc.*.nc
+            file_pattern = file_template.format(
+                var_code=var_spec['var_code'],
+                var_name=var_spec['var_name'],
+                grid_type=var_spec['grid_type'],
+                date_start='*',
+                date_end='*'
+            ).replace('.{date_start}_{date_end}', '.*')  # Wildcard for dates
+            
+            # Search for files
+            month_files = sorted(glob.glob(str(month_path / file_pattern)))
+            
+            # Filter by date range (extract dates from filename)
+            # Format: YYYYMMDD00_YYYYMMDD23
+            date_pattern = re.compile(r'\.(\d{8})\d{2}_(\d{8})\d{2}\.nc')
+            
+            for file_path in month_files:
+                filename = Path(file_path).name
+                match = date_pattern.search(filename)
+                
+                if match:
+                    file_start_str = match.group(1)  # YYYYMMDD
+                    file_end_str = match.group(2)    # YYYYMMDD
+                    
+                    try:
+                        file_start = datetime.strptime(file_start_str, '%Y%m%d')
+                        file_end = datetime.strptime(file_end_str, '%Y%m%d')
+                        
+                        # Check if file overlaps with requested date range
+                        if file_start <= end_date and file_end >= start_date:
+                            variable_files[var_name].append(file_path)
+                    except ValueError as e:
+                        logger.warning(f"Could not parse dates from {filename}: {e}")
+    
+    # Log results
+    for var_name, files in variable_files.items():
+        logger.info(f"Found {len(files)} files for variable '{var_name}'")
+        if len(files) == 0:
+            logger.warning(f"No files found for variable '{var_name}' in date range")
+    
+    return variable_files
+
+
 def read_concat_files(files, time_chunk_size=48, spatial_dims={'lat': -1, 'lon': -1}, 
-                      max_retries=5, concat_dim='time'):
+                      max_retries=5, concat_dim='time', combine_vars=False):
     """
     Read multiple NetCDF files and concatenate along time dimension with validation.
     
@@ -538,8 +663,11 @@ def read_concat_files(files, time_chunk_size=48, spatial_dims={'lat': -1, 'lon':
     
     Parameters:
     -----------
-    files : list
-        List of file paths to read
+    files : list or dict
+        File paths to read. Can be:
+        - list: Single list of files (all files contain same variables)
+        - dict: Dictionary mapping variable names to file lists
+                (for datasets with variables in separate files, e.g., ERA5)
     time_chunk_size : int
         Time chunk size for processing (default: 48)
     spatial_dims : dict
@@ -558,6 +686,10 @@ def read_concat_files(files, time_chunk_size=48, spatial_dims={'lat': -1, 'lon':
         Maximum number of retry attempts for file reading (default: 5)
     concat_dim : str
         Dimension along which to concatenate files (default: 'time')
+    combine_vars : bool
+        If True and files is a dict, merge datasets from different variables.
+        Each variable's files are concatenated along concat_dim, then merged.
+        (default: False)
         
     Returns:
     --------
@@ -579,12 +711,23 @@ def read_concat_files(files, time_chunk_size=48, spatial_dims={'lat': -1, 'lon':
     
     Examples:
     ---------
-    # Default: Full spatial chunks for remapping
+    # Single-variable dataset (IMERG, SCREAM, etc.)
     ds = read_concat_files(files, time_chunk_size=24)
     
     # Auto-detected spatial dimensions (recommended)
     spatial_dims = detect_spatial_dimensions(files)
     ds = read_concat_files(files, time_chunk_size=24, spatial_dims=spatial_dims)
+    
+    # Multi-variable dataset (ERA5, each variable in separate files)
+    variables = [
+        {'var_code': '128_130_t', 'var_name': 't', 'grid_type': 'sc'},
+        {'var_code': '128_133_q', 'var_name': 'q', 'grid_type': 'sc'}
+    ]
+    file_dict = get_era5_input_files(start_date, end_date, base_dir, variables)
+    # file_dict = {'t': [t_files...], 'q': [q_files...]}
+    ds = read_concat_files(file_dict, time_chunk_size=24,
+                          spatial_dims={'latitude': -1, 'longitude': -1},
+                          combine_vars=True)
     
     # Custom spatial chunking
     ds = read_concat_files(files, time_chunk_size=48, 
@@ -604,6 +747,50 @@ def read_concat_files(files, time_chunk_size=48, spatial_dims={'lat': -1, 'lon':
     
     logger.info(f"Using chunking strategy: {chunks}")
     
+    # Handle dict input (multi-variable datasets like ERA5)
+    if isinstance(files, dict):
+        if not combine_vars:
+            raise ValueError("files is a dict but combine_vars=False. Set combine_vars=True to merge variables.")
+        
+        logger.info(f"📦 Multi-variable dataset with {len(files)} variables: {list(files.keys())}")
+        
+        # Process each variable separately, then merge
+        var_datasets = {}
+        total_files = sum(len(file_list) for file_list in files.values())
+        
+        start_time = time.time()
+        logger.info(f"📂 Starting to read {total_files} files across {len(files)} variables...")
+        
+        for var_name, var_files in files.items():
+            if len(var_files) == 0:
+                logger.warning(f"Skipping variable '{var_name}': no files provided")
+                continue
+            
+            logger.info(f"Loading variable '{var_name}': {len(var_files)} files")
+            
+            # Read this variable's files (recursive call with list)
+            var_ds = read_concat_files(
+                var_files, 
+                time_chunk_size=time_chunk_size,
+                spatial_dims=spatial_dims,
+                max_retries=max_retries,
+                concat_dim=concat_dim,
+                combine_vars=False  # Already at single-variable level
+            )
+            var_datasets[var_name] = var_ds
+        
+        # Merge all variables into single dataset
+        logger.info(f"Merging {len(var_datasets)} variables into single dataset...")
+        ds = xr.merge(list(var_datasets.values()), compat='override')
+        
+        elapsed_time = time.time() - start_time
+        logger.info(f"📊 Multi-variable dataset loaded in {elapsed_time/60:.1f} minutes")
+        logger.info(f"📊 Final dataset: {ds.sizes}")
+        logger.info(f"📊 Variables: {list(ds.data_vars)}")
+        
+        return ds
+    
+    # Original single-list behavior
     # Start timing the file reading process
     start_time = time.time()
     logger.info(f"📂 Starting to read {len(files)} files...")
