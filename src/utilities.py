@@ -24,6 +24,42 @@ from dask.distributed import Client, LocalCluster
 logger = logging.getLogger(__name__)
 
 
+def _cftime_to_timestamp(time_val):
+    """
+    Convert a single cftime object to pandas Timestamp.
+    
+    Helper function to handle conversion of cftime objects (which have a 'calendar' 
+    attribute) to standard pandas Timestamps. Complements convert_cftime_to_datetime64()
+    which operates on full xarray datasets.
+    
+    Parameters:
+    -----------
+    time_val : cftime object or datetime-like
+        Time value to convert
+        
+    Returns:
+    --------
+    pd.Timestamp : Converted timestamp
+    
+    Examples:
+    ---------
+    >>> import cftime
+    >>> time_val = cftime.DatetimeGregorian(2020, 1, 1, 0, 0, 0)
+    >>> _cftime_to_timestamp(time_val)
+    Timestamp('2020-01-01 00:00:00')
+    """
+    if hasattr(time_val, 'calendar'):
+        # cftime object - convert to datetime then to pandas
+        from datetime import datetime as dt
+        return pd.Timestamp(dt(
+            time_val.year, time_val.month, time_val.day,
+            time_val.hour, time_val.minute, time_val.second
+        ))
+    else:
+        # numpy datetime64 or similar - convert directly
+        return pd.Timestamp(time_val)
+
+
 def detect_spatial_dimensions(files, time_dim='time'):
     """
     Auto-detect spatial dimension names from dataset files.

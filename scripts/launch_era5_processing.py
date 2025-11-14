@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from remap_to_healpix import process_to_healpix_zarr
 from src.utilities import parse_date, get_era5_input_files
+from src.preprocessing import subset_time_by_interval
 
 def load_config(config_path):
     """Load configuration from YAML file"""
@@ -82,6 +83,7 @@ Examples:
   %(prog)s 2020-01-01 2020-01-31 -z 8
   %(prog)s 2020-01-01 2020-12-31 -z 8 --overwrite
   %(prog)s 2020-01-01 2020-01-07 -z 8 --vars T Q U V
+  %(prog)s 2020-01-01 2020-01-31 -z 8 --time-subset 3h
 
 Date formats:
   YYYY-MM-DD       - Date only (end_date extends to 23:59:59)
@@ -108,6 +110,8 @@ Note: ERA5 data is organized with each variable in separate files.
                         help='Overwrite existing output files')
     parser.add_argument('--vars', nargs='+',
                         help='Specific variables to process (e.g., T Q U V). Default: all in config')
+    parser.add_argument('--time-subset', type=str, default=None,
+                        help='Subset time dimension (e.g., 3h, 6h, 12h, 1d). Selects time steps at intervals.')
     
     return parser.parse_args()
 
@@ -196,6 +200,16 @@ def main():
     
     print(f"Output: {output_zarr}")
 
+    # Setup preprocessing function for time subsetting if specified
+    preprocessing_func = None
+    preprocessing_kwargs = None
+    time_subset = args.time_subset or config.get('time_subset', None)
+    
+    if time_subset:
+        preprocessing_func = subset_time_by_interval
+        preprocessing_kwargs = {'time_subset': time_subset}
+        print(f"⏰ Time subsetting: {time_subset} intervals")
+    
     # Update config with input files
     additional_config = {
         'input_files': file_dict,  # Dict of variable: [files]
@@ -215,6 +229,8 @@ def main():
         output_zarr=str(output_zarr),
         weights_file=weights_file,
         overwrite=args.overwrite,
+        preprocessing_func=preprocessing_func,
+        preprocessing_kwargs=preprocessing_kwargs,
         config=config,
     )
     
