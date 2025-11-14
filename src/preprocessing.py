@@ -83,7 +83,7 @@ def subset_time_by_minute(ds, time_subset):
         raise ValueError(f"Invalid time_subset value: '{time_subset}'. Must be '00min' or '30min'")
     
     # Apply the mask
-    ds_subset = ds.isel(time=mask)
+    ds_subset = ds.isel({'time': mask})
     subset_times = ds_subset.sizes['time']
     
     logger.info(f"Time steps: {original_times} → {subset_times} ({subset_times/original_times*100:.1f}% retained)")

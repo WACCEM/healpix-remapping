@@ -1,0 +1,128 @@
+# ERA5 2D Surface Variables Configuration
+# Base directory for ERA5 2D surface data
+input_base_dir: '/global/cfs/projectdirs/m3522/cmip6/ERA5/e5.oper.an.sfc'
+
+# Output directory for remapped HEALPix data
+output_base_dir: '/pscratch/sd/w/wcmca1/hackathon/healpix/era5'
+output_basename: 'era5_2d'
+
+# Processing parameters
+default_zoom: 8      # Default HEALPix zoom level
+time_chunk_size: 24  # Hours per chunk (1 day)
+
+# Weights file path (template with {zoom} placeholder)
+weights_file: "/pscratch/sd/w/wcmca1/hackathon/healpix/era5/weights/era5_z{zoom}_weights.nc"
+
+# ERA5 2D surface variables
+# Each variable stored in monthly files within monthly directories (YYYYMM/)
+# File format: e5.oper.an.sfc.{var_code}.ll025{grid_type}.{YYYYMM0100}_{YYYYMMlast_day23}.nc
+era5_variables:
+  - var_code: '128_137_tcwv'
+    var_name: 'TCWV'
+    output_name: 'tcwv'
+    grid_type: 'sc'
+    description: 'Total column water vapor'
+    
+  # - var_code: '128_059_cape'
+  #   var_name: 'CAPE'
+  #   output_name: 'cape'
+  #   grid_type: 'sc'
+  #   description: 'Convective available potential energy'
+    
+  - var_code: '128_034_sstk'
+    var_name: 'SSTK'
+    output_name: 'sstk'
+    grid_type: 'sc'
+    description: 'Sea surface temperature'
+    
+  # - var_code: '128_235_skt'
+  #   var_name: 'SKT'
+  #   output_name: 'skt'
+  #   grid_type: 'sc'
+  #   description: 'Skin temperature'
+    
+  - var_code: '128_167_2t'
+    var_name: 'VAR_2T'
+    output_name: 't2m'
+    grid_type: 'sc'
+    description: '2 metre temperature'
+    
+  - var_code: '128_168_2d'
+    var_name: 'VAR_2D'
+    output_name: 'd2m'
+    grid_type: 'sc'
+    description: '2 metre dewpoint temperature'
+    
+  - var_code: '128_134_sp'
+    var_name: 'SP'
+    output_name: 'sp'
+    grid_type: 'sc'
+    description: 'Surface pressure'
+    
+  - var_code: '128_151_msl'
+    var_name: 'MSL'
+    output_name: 'msl'
+    grid_type: 'sc'
+    description: 'Mean sea level pressure'
+    
+  - var_code: '128_165_10u'
+    var_name: 'VAR_10U'
+    output_name: 'u10'
+    grid_type: 'sc'
+    description: '10 metre U wind component'
+    
+  - var_code: '128_166_10v'
+    var_name: 'VAR_10V'
+    output_name: 'v10'
+    grid_type: 'sc'
+    description: '10 metre V wind component'
+    
+  - var_code: '128_232_ie'
+    var_name: 'IE'
+    output_name: 'ie'
+    grid_type: 'sc'
+    description: 'Instantaneous moisture flux'
+    
+  - var_code: '128_231_ishf'
+    var_name: 'ISHF'
+    output_name: 'ishf'
+    grid_type: 'sc'
+    description: 'Instantaneous surface sensible heat flux'
+
+# Variable remapping (uppercase ERA5 names to standard lowercase)
+remap_variables:
+  TCWV: 'prw'
+  # CAPE: 'cape'
+  SSTK: 'sstk'
+  # SKT: 'skt'
+  VAR_2T: 'tas'
+  VAR_2D: 'd2m'
+  SP: 'ps'
+  MSL: 'psl'
+  VAR_10U: 'u10'
+  VAR_10V: 'v10'
+  IE: 'ie'
+  ISHF: 'hfssd'
+
+# Monthly file organization
+use_monthly_dirs: true
+monthly_files: true  # Flag for monthly vs. daily files
+
+# File template pattern for 2D surface variables
+file_template: 'e5.oper.an.sfc.{var_code}.ll025{grid_type}.{date_start}_{date_end}.nc'
+
+# Grid configuration
+grid_type: 'latlon_1d'  # Regular lat/lon grid
+x_dimname: 'longitude'
+y_dimname: 'latitude'
+x_coordname: 'longitude'
+y_coordname: 'latitude'
+spatial_dimensions:
+  latitude: -1   # Full spatial chunks for remapping
+  longitude: -1
+
+# Dask configuration (optimized for 2D data - smaller memory needs)
+dask:
+  n_workers: 16
+  threads_per_worker: 1
+  memory_limit: '20GB'  # Less than 3D since no vertical levels

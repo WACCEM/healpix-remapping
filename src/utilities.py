@@ -565,13 +565,15 @@ def temporal_average(ds, time_average, convert_time=False):
 
 
 def get_era5_input_files(start_date, end_date, base_dir=None, variables=None,
-                        file_template='e5.oper.an.pl.{var_code}_{var_name}.ll025{grid_type}.{date_start}_{date_end}.nc'):
+                        file_template='e5.oper.an.pl.{var_code}.ll025{grid_type}.{date_start}_{date_end}.nc',
+                        monthly_files=False):
     """
     Get ERA5 files for specified date range and variables.
     
     ERA5 data is organized with:
     - Monthly directories: YYYYMM/
-    - Daily files (24 hours per file): YYYYMMDD00_YYYYMMDD23
+    - 3D variables: Daily files (24 hours per file): YYYYMMDD00_YYYYMMDD23
+    - 2D variables: Monthly files (all hours in month): YYYYMM0100_YYYYMM[last_day]23
     - Each variable in separate files
     
     Parameters:
@@ -589,7 +591,11 @@ def get_era5_input_files(start_date, end_date, base_dir=None, variables=None,
         - 'grid_type': Grid type suffix (e.g., 'sc' or 'uv')
         Example: [{'var_code': '128_130_t', 'var_name': 't', 'grid_type': 'sc'}]
     file_template : str, optional
-        Template for filename pattern. Default matches ERA5 format.
+        Template for filename pattern. Default matches ERA5 3D format.
+    monthly_files : bool, optional
+        If True, expect monthly files (2D surface variables).
+        If False, expect daily files (3D pressure level variables).
+        Default: False
         
     Returns:
     --------
@@ -598,7 +604,7 @@ def get_era5_input_files(start_date, end_date, base_dir=None, variables=None,
     
     Examples:
     ---------
-    # Get temperature and humidity for January 2020
+    # Get 3D temperature and humidity for January 2020 (daily files)
     variables = [
         {'var_code': '128_130_t', 'var_name': 't', 'grid_type': 'sc'},
         {'var_code': '128_133_q', 'var_name': 'q', 'grid_type': 'sc'}
@@ -609,6 +615,18 @@ def get_era5_input_files(start_date, end_date, base_dir=None, variables=None,
         variables=variables
     )
     # Returns: {'t': [file1, file2, ...], 'q': [file1, file2, ...]}
+    
+    # Get 2D surface variables for January 2020 (monthly files)
+    variables_2d = [
+        {'var_code': '128_137_tcwv', 'var_name': 'TCWV', 'grid_type': 'sc'},
+        {'var_code': '128_167_2t', 'var_name': 'VAR_2T', 'grid_type': 'sc'}
+    ]
+    files_2d = get_era5_input_files(
+        datetime(2020, 1, 1), datetime(2020, 1, 31),
+        base_dir='/global/cfs/projectdirs/m3522/cmip6/ERA5/e5.oper.an.sfc',
+        variables=variables_2d,
+        monthly_files=True
+    )
     """
     
     if variables is None or len(variables) == 0:
@@ -659,7 +677,7 @@ def get_era5_input_files(start_date, end_date, base_dir=None, variables=None,
             month_files = sorted(glob.glob(str(month_path / file_pattern)))
             
             # Filter by date range (extract dates from filename)
-            # Format: YYYYMMDD00_YYYYMMDD23
+            # Format: YYYYMMDD00_YYYYMMDD23 (daily) or YYYYMM0100_YYYYMM[last_day]23 (monthly)
             date_pattern = re.compile(r'\.(\d{8})\d{2}_(\d{8})\d{2}\.nc')
             
             for file_path in month_files:
@@ -677,6 +695,10 @@ def get_era5_input_files(start_date, end_date, base_dir=None, variables=None,
                         # Check if file overlaps with requested date range
                         if file_start <= end_date and file_end >= start_date:
                             variable_files[var_name].append(file_path)
+                            
+                            # For monthly files, only one file per month per variable
+                            if monthly_files:
+                                break  # Move to next variable after finding monthly file
                     except ValueError as e:
                         logger.warning(f"Could not parse dates from {filename}: {e}")
     
