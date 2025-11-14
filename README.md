@@ -21,6 +21,8 @@ A high-performance, scalable pipeline for remapping **any gridded NetCDF dataset
 
 **Complete Examples** - See `scripts/example_usage.py` for 4 different dataset format examples.
 
+**ERA5 Multi-Variable Support** - Custom processing scripts for ERA5 2D (surface) and 3D (pressure level) variables with flexible time/level subsetting and parallel merge utility.
+
 ## Features
 
 - **Multiple Grid Types Supported**: Regular lat/lon grids (1D/2D) and unstructured grids (SCREAM, E3SM)
@@ -304,9 +306,9 @@ remap_variables:
 
 # Pass-through variables (no remapping)
 passthrough_variables:
+  - p_levs                     # Vertical pressure level
   - hyam                       # Hybrid coordinate A
   - hybm                       # Hybrid coordinate B
-  - P0                         # Reference pressure
 
 # Mandatory weights file
 weights_file: "/path/to/weights/scream_ne1024_to_healpix_z9_weights.nc"
@@ -334,6 +336,157 @@ python launch_scream_processing.py 2019-09-01 2019-09-30 \
 - **Memory usage**: ~24GB RAM for zoom 9 processing with 16 workers
 - **Throughput**: Similar to regular grids (~15-20 GB/minute write speed)
 
+## ERA5 Multi-Variable Processing
+
+The workflow includes custom scripts for processing ERA5 reanalysis data, which requires special handling due to different file organizations for 2D surface and 3D pressure level variables.
+
+### Key Features
+
+1. **Separate 2D and 3D Processing**: ERA5 2D (surface) and 3D (pressure level) variables are stored in different directory structures and processed separately
+2. **Time Subsetting**: Reduce temporal resolution (e.g., 1-hourly → 3-hourly) for storage efficiency
+3. **Vertical Level Subsetting**: Select specific pressure levels from 37 levels (e.g., 15 common levels: 60% storage reduction)
+4. **Parallel Merge Utility**: Fast merging of 2D and 3D outputs with progress monitoring (3-8x speedup with parallel writing)
+
+### ERA5 Data Organization
+
+**3D Pressure Level Variables:**
+- Location: `/global/cfs/projectdirs/m3522/cmip6/ERA5/e5.oper.an.pl/YYYYMM/`
+- Pattern: `e5.oper.an.pl.{var_code}.ll025{grid_type}.YYYYMMDD00_YYYYMMDD23.nc`
+- Structure: Daily files in monthly directories, 37 pressure levels, hourly data
+- Example variables: T (temperature), Q (specific humidity), U/V (winds), Z (geopotential)
+
+**2D Surface Variables:**
+- Location: `/global/cfs/projectdirs/m3522/cmip6/ERA5/e5.oper.an.sfc/YYYYMM/`
+- Pattern: `e5.oper.an.sfc.{var_code}.ll025{grid_type}.YYYYMM0100_YYYYMM[last]23.nc`
+- Structure: Monthly files in monthly directories, all hours in one file
+- Example variables: TCWV (total column water vapor), SP (surface pressure), 10m winds
+
+### Configuration Examples
+
+**ERA5 3D Configuration** (`config/era5_3d_config.yaml`):
+```yaml
+# Time resolution
+original_time_suffix: '1H'        # Input data is 1-hourly
+time_subset: '3h'                 # Output every 3 hours (optional)
+
+# Vertical level subsetting (37 → 15 levels, ~60% reduction)
+level_subset: [100, 200, 300, 400, 500, 600, 700, 750, 800, 850, 
+               900, 925, 950, 975, 1000]
+z_coordname: "level"
+
+# Variables to process
+era5_variables:
+  - var_code: "128_130_t"
+    var_name: "T"
+    grid_type: "sc"
+  - var_code: "128_133_q"
+    var_name: "Q"
+    grid_type: "sc"
+  # ... more variables
+```
+
+**ERA5 2D Configuration** (`config/era5_2d_config.yaml`):
+```yaml
+# Similar structure but without level_subset
+original_time_suffix: '1H'
+time_subset: '3h'
+
+# Surface variables
+era5_variables:
+  - var_code: "128_137_tcwv"
+    var_name: "TCWV"
+    grid_type: "sc"
+  - var_code: "228_134_sp"
+    var_name: "SP"
+    grid_type: "sc"
+  # ... more variables
+```
+
+### Processing Workflow
+
+**Step 1: Process 3D Pressure Level Data**
+```bash
+cd scripts
+
+# Process 3 years of 3D data
+python launch_era5_3d_processing.py 20190101 20211231 -z 8 -c ../config/era5_3d_config.yaml
+
+# Optional: Process specific variables only
+python launch_era5_3d_processing.py 20190101 20211231 -z 8 \
+    -c ../config/era5_3d_config.yaml \
+    --vars T Q U V
+```
+
+**Step 2: Process 2D Surface Data**
+```bash
+# Process same date range for 2D data
+python launch_era5_2d_processing.py 20190101 20211231 -z 8 -c ../config/era5_2d_config.yaml
+```
+
+**Step 3: Merge 2D and 3D Outputs**
+```bash
+# Merge into single Zarr file with parallel writing
+python merge_era5_zarr.py \
+    /path/to/era5_3d_3H_zoom8_20190101_20211231.zarr \
+    /path/to/era5_2d_3H_zoom8_20190101_20211231.zarr \
+    -o /path/to/output/era5_merged_3H_zoom8_20190101_20211231.zarr \
+    --n-workers 8
+
+# Monitor progress during merge (displays chunk completion percentage)
+```
+
+### Time and Level Subsetting
+
+**Time Subsetting** (reduces storage):
+```yaml
+time_subset: '3h'    # 1h → 3h (output every 3 hours, skipping intermediate)
+time_subset: '6h'    # 1h → 6h
+# Note: This selects every Nth time step, not averaging
+```
+
+**Level Subsetting** (reduces 3D storage ~60%):
+```yaml
+level_subset: [100, 200, 300, 500, 700, 850, 925, 1000]  # 8 levels
+level_subset: [100, 200, 300, 400, 500, 600, 700, 750, 800, 850, 
+               900, 925, 950, 975, 1000]                  # 15 levels
+# Original: 37 levels (1000 hPa to 1 hPa)
+```
+
+### Performance Metrics (NERSC Perlmutter, Zoom 8, 3-hourly output)
+
+**3 Years Processing (2019-2021, 16 workers):**
+
+| Stage | Variables | Size | Runtime | Throughput |
+|-------|-----------|------|---------|------------|
+| 3D Processing | 7 vars, 15 levels | 2,697 GB | 217 min | 13.8 GB/min |
+| 2D Processing | 10 vars | 257 GB | 36 min | 7.5 GB/min |
+| Merge | Combined |  GB | min |  GB/s (8 workers) |
+| **Total** | | **~3 TB** | **~4.2 hours** | **~12 GB/min avg** |
+
+**Storage Reduction:**
+- Time subsetting (1h → 3h): **67% reduction**
+- Level subsetting (37 → 15 levels): **60% reduction**
+
+### Merge Utility Features
+
+The `merge_era5_zarr.py` script provides:
+- **Parallel writing**: 3-8x faster than sequential (configurable workers)
+- **Progress monitoring**: Real-time chunk completion tracking
+- **Chunk preservation**: Maintains optimal chunking from input files
+- **Optional rechunking**: Use `--rechunk` flag if needed (disabled by default)
+- **Throughput reporting**: Displays write speed (GB/s) upon completion
+
+```bash
+# Parallel merge with 8 workers (recommended)
+python merge_era5_zarr.py 3d.zarr 2d.zarr -o merged.zarr --n-workers 8
+
+# Sequential merge (slower but uses less memory)
+python merge_era5_zarr.py 3d.zarr 2d.zarr -o merged.zarr --no-parallel
+
+# With custom rechunking (not recommended - preserves original by default)
+python merge_era5_zarr.py 3d.zarr 2d.zarr -o merged.zarr --rechunk
+```
+
 ## Project Structure
 
 ```
@@ -346,12 +499,17 @@ healpix-remapping/
 │   ├── imerg_config.yaml              # IMERG dataset configuration
 │   ├── tb_imerg_config.yaml           # IR_IMERG dataset configuration
 │   ├── scream_ne1024_1H_config.yaml   # SCREAM ne1024 high-res configuration
-│   └── scream_ne120_3H_config.yaml    # SCREAM ne120 standard configuration
+│   ├── scream_ne120_3H_config.yaml    # SCREAM ne120 standard configuration
+│   ├── era5_2d_config.yaml            # ERA5 2D surface variables configuration
+│   └── era5_3d_config.yaml            # ERA5 3D pressure level configuration
 │
 ├── scripts/                            # Execution scripts
 │   ├── launch_imerg_processing.py     # IMERG launcher
 │   ├── launch_ir_imerg_processing.py  # IR_IMERG launcher
 │   ├── launch_scream_processing.py    # SCREAM launcher
+│   ├── launch_era5_2d_processing.py   # ERA5 2D surface launcher
+│   ├── launch_era5_3d_processing.py   # ERA5 3D pressure level launcher
+│   ├── merge_era5_zarr.py             # Merge ERA5 2D and 3D outputs
 │   ├── coarsen_healpix.py             # HEALPix coarsening utility
 │   └── example_usage.py               # 4 dataset examples
 │
@@ -364,6 +522,7 @@ healpix-remapping/
 │   ├── utilities.py                   # General utilities
 │   ├── zarr_tools.py                  # Zarr I/O utilities
 │   ├── remap_tools.py                 # Remapping functions (grid type handling)
+│   ├── preprocessing.py               # Dataset preprocessing (time/level subsetting)
 │   └── chunk_tools.py                 # Chunking calculations
 │
 └── notebooks/                          # Jupyter notebooks for development

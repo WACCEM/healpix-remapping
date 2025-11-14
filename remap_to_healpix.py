@@ -233,6 +233,11 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
         - skip_variables: List of variable patterns to skip (supports wildcards)
         - required_dimensions: List of required dimension combinations
         - remap_variables: Dict mapping input variable names to output names
+        - input_files: Pre-searched files (dict or list), bypasses get_input_files()
+          Dict format for multi-variable: {'var1': [files], 'var2': [files]}
+          List format for single/all variables: [file1, file2, ...]
+        - combine_vars: Merge variables from separate files (default: False)
+          Required for ERA5 multi-variable workflow
     
     Returns:
     --------
@@ -259,6 +264,33 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
         weights_file="/path/to/weights.nc",
         config=config
     )
+    
+    # Example: ERA5 data with multi-variable files
+    from src.utilities import get_era5_input_files
+    
+    file_dict = get_era5_input_files(
+        start_date=datetime(2020, 1, 1),
+        end_date=datetime(2020, 1, 7),
+        variables=['T', 'Q', 'U', 'V'],
+        config=era5_config
+    )
+    
+    config = {
+        'input_files': file_dict,  # Pre-searched files by variable
+        'combine_vars': True,       # Merge variables into one dataset
+        'remap_variables': {'T': 'ta', 'Q': 'hus'},
+        'time_chunk_size': 24,
+        'grid_type': 'latlon_1d'
+    }
+    
+    process_to_healpix_zarr(
+        start_date=datetime(2020, 1, 1),
+        end_date=datetime(2020, 1, 7),
+        zoom=8,
+        output_zarr="/path/to/era5_output.zarr",
+        weights_file="/path/to/era5_weights.nc",
+        config=config
+    )
     """
     
     # Extract parameters from config dictionary with defaults
@@ -283,6 +315,8 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
     skip_variables = config.get('skip_variables', None)
     required_dimensions = config.get('required_dimensions', None)
     remap_variables = config.get('remap_variables', None)
+    input_files = config.get('input_files', None)  # Pre-searched files (ERA5)
+    combine_vars = config.get('combine_vars', False)  # Merge multi-variable files
     
     logger.info("="*70)
     logger.info("Configuration Summary")
@@ -301,16 +335,25 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
     logger.info("="*70)
     
     # Get file list for date range FIRST (needed for auto-detection)
-    files = utilities.get_input_files(
-        start_date, end_date, input_base_dir,
-        date_pattern=date_pattern,
-        date_format=date_format,
-        use_year_subdirs=use_year_subdirs,
-        file_glob=file_glob
-    )
-    if not files:
-        raise ValueError("No files found for the specified period")
-    
+    # Use pre-searched files if provided (e.g., from get_era5_input_files)
+    if input_files is not None:
+        files = input_files
+        if isinstance(files, dict):
+            total_files = sum(len(f) for f in files.values())
+            logger.info(f"Using pre-searched files: {total_files} files across {len(files)} variables")
+        else:
+            logger.info(f"Using pre-searched files: {len(files)} files")
+    else:
+        files = utilities.get_input_files(
+            start_date, end_date, input_base_dir,
+            date_pattern=date_pattern,
+            date_format=date_format,
+            use_year_subdirs=use_year_subdirs,
+            file_glob=file_glob
+        )
+        if not files:
+            raise ValueError("No files found for the specified period")
+
     # Hybrid spatial dimension detection:
     # Priority: explicit config > auto-detection > default fallback
     if spatial_chunks is None:
@@ -345,11 +388,12 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
             files, 
             time_chunk_size=time_chunk_size,
             spatial_dims=spatial_chunks,
-            concat_dim=concat_dim
+            concat_dim=concat_dim,
+            combine_vars=combine_vars  # Merge multi-variable files (ERA5)
         )
         step_time = time.time() - step_start
         logger.info(f"✅ Step 1 completed in {step_time/60:.1f} minutes")
-        
+
         # Apply dataset-specific preprocessing if requested
         if preprocessing_func is not None:
             logger.info("🔄 Step 1b: Applying dataset-specific preprocessing...")
