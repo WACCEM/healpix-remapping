@@ -306,9 +306,9 @@ remap_variables:
 
 # Pass-through variables (no remapping)
 passthrough_variables:
+  - p_levs                     # Vertical pressure level
   - hyam                       # Hybrid coordinate A
   - hybm                       # Hybrid coordinate B
-  - P0                         # Reference pressure
 
 # Mandatory weights file
 weights_file: "/path/to/weights/scream_ne1024_to_healpix_z9_weights.nc"
