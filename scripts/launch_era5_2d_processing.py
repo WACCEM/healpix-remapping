@@ -9,13 +9,15 @@ Example usage:
     # Process all 2D variables for January 2020
     python scripts/launch_era5_2d_processing.py 2020-01-01 2020-01-31 -z 8
     
-    # Process specific variables with time subsetting
+    # Process specific variables
     python scripts/launch_era5_2d_processing.py 2020-01-01 2020-01-31 -z 8 \
-        --vars TCWV CAPE SSTK --time-subset 3h
+        --vars TCWV CAPE SSTK
     
     # Process with custom output directory
     python scripts/launch_era5_2d_processing.py 2020-01-01 2020-01-31 -z 8 \
         --output-dir /path/to/output
+    
+    # Time subsetting: Edit time_subset in config file (e.g., time_subset: '3h')
 """
 
 import os
@@ -42,8 +44,10 @@ Examples:
   # Process all 2D variables for January 2020 at zoom level 8
   %(prog)s 2020-01-01 2020-01-31 -z 8
   
-  # Process specific variables with 3-hourly time subsetting
-  %(prog)s 2020-01-01 2020-01-31 -z 8 --vars TCWV CAPE SSTK --time-subset 3h
+  # Process specific variables
+  %(prog)s 2020-01-01 2020-01-31 -z 8 --vars TCWV CAPE SSTK
+  
+  # Time subsetting: Edit time_subset in config file (e.g., time_subset: '3h')
         """
     )
     
@@ -68,10 +72,6 @@ Examples:
                        help='Override output filename (without .zarr extension)')
     parser.add_argument('--overwrite', action='store_true',
                        help='Overwrite output file if it exists')
-    
-    # Preprocessing options
-    parser.add_argument('--time-subset', type=str,
-                       help='Subset time dimension to specified interval (e.g., "3h", "6h", "1d")')
     
     return parser.parse_args()
 
@@ -144,7 +144,7 @@ def main():
     variables = filter_variables(config, args.vars)
     print(f"Processing {len(variables)} variables:")
     for var in variables:
-        print(f"  - {var['var_name']} ({var['description']})")
+        print(f"  - {var['var_name']}")
     print()
     
     # Search for input files
@@ -184,11 +184,20 @@ def main():
         output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    # Determine time resolution suffix for output filename
+    time_subset = config.get('time_subset', None)
+    if time_subset:
+        # Use time_subset (uppercase) if specified in config
+        time_suffix = time_subset.upper()
+    else:
+        # Use original_time_suffix from config
+        time_suffix = config.get('original_time_suffix', '1H').upper()
+    
     date_str = f"{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
     if args.output_name:
         output_filename = args.output_name
     else:
-        output_filename = f"{config['output_basename']}_zoom{args.zoom}_{date_str}"
+        output_filename = f"{config['output_basename']}_{time_suffix}_zoom{args.zoom}_{date_str}"
     
     output_zarr = output_dir / f"{output_filename}.zarr"
     print(f"Output: {output_zarr}")
@@ -196,7 +205,6 @@ def main():
     # Setup preprocessing function for time subsetting if specified
     preprocessing_func = None
     preprocessing_kwargs = None
-    time_subset = args.time_subset or config.get('time_subset', None)
     
     if time_subset:
         preprocessing_func = subset_time_by_interval
