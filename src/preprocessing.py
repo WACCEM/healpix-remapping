@@ -3,7 +3,7 @@
 Dataset-specific preprocessing functions.
 
 This module contains preprocessing functions that are specific to certain datasets
-(e.g., IMERG, IR_IMERG) and are not part of the generic remapping pipeline.
+(e.g., IMERG, IR_IMERG, ERA5) and are not part of the generic remapping pipeline.
 These functions can be applied as optional preprocessing steps before remapping.
 """
 
@@ -88,6 +88,123 @@ def subset_time_by_minute(ds, time_subset):
     
     logger.info(f"Time steps: {original_times} → {subset_times} ({subset_times/original_times*100:.1f}% retained)")
     logger.info(f"Reduction: {original_times - subset_times} time steps removed")
+    
+    return ds_subset
+
+
+def subset_vertical_levels(ds, level_subset, z_coordname='level'):
+    """
+    Subset dataset by selecting specific vertical levels.
+    
+    This function selects specific vertical levels (e.g., pressure levels) from
+    3D atmospheric data while maintaining lazy evaluation with Dask. Useful for
+    reducing data size by keeping only commonly-used levels.
+    
+    Common use case: ERA5 3D data has 37 pressure levels, but analysis often only
+    needs ~15 levels. Subsetting reduces file size and processing time by ~60%.
+    
+    Parameters:
+    -----------
+    ds : xr.Dataset
+        Input dataset with vertical coordinate
+    level_subset : list of numeric
+        List of level values to keep (e.g., [1000, 925, 850, 700, 500, 300, 200, 100])
+        Values must match coordinate values in dataset
+    z_coordname : str, optional
+        Name of vertical coordinate dimension (default: 'level')
+        Common names: 'level', 'plev', 'pressure', 'lev', 'z'
+    
+    Returns:
+    --------
+    xr.Dataset : Dataset with subset of vertical levels (lazy)
+    
+    Raises:
+    -------
+    ValueError : If z_coordname not found in dataset
+    ValueError : If no valid levels found in dataset
+    
+    Notes:
+    ------
+    - Maintains lazy evaluation - does NOT load data into memory
+    - Uses index-based selection compatible with Dask arrays
+    - Preserves all data variables and attributes
+    - Warns if requested levels not found in dataset
+    - Order of output levels matches order in level_subset
+    
+    Examples:
+    ---------
+    >>> import xarray as xr
+    >>> from src.preprocessing import subset_vertical_levels
+    >>> 
+    >>> # Load ERA5 3D data with 37 pressure levels
+    >>> ds = xr.open_dataset('era5_3d.nc')
+    >>> 
+    >>> # Keep only tropospheric levels
+    >>> levels = [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100]
+    >>> ds_trop = subset_vertical_levels(ds, levels)
+    >>> 
+    >>> # Keep only standard mandatory levels
+    >>> levels = [1000, 850, 700, 500, 400, 300, 250, 200, 150, 100]
+    >>> ds_std = subset_vertical_levels(ds, levels)
+    >>> 
+    >>> # Use custom vertical coordinate name
+    >>> ds_subset = subset_vertical_levels(ds, levels, z_coordname='plev')
+    """
+    logger.info(f"Subsetting vertical levels using coordinate: '{z_coordname}'")
+    
+    # Check if vertical coordinate exists
+    if z_coordname not in ds.coords:
+        raise ValueError(
+            f"Vertical coordinate '{z_coordname}' not found in dataset. "
+            f"Available coordinates: {list(ds.coords.keys())}"
+        )
+    
+    original_levels = ds.sizes[z_coordname]
+    
+    # Get all level values from dataset
+    all_levels = ds[z_coordname].values
+    
+    # Find indices of requested levels
+    level_indices = []
+    missing_levels = []
+    
+    for requested_level in level_subset:
+        # Find index where level matches (within small tolerance for floating point)
+        matches = [i for i, lev in enumerate(all_levels) if abs(lev - requested_level) < 0.01]
+        
+        if matches:
+            level_indices.append(matches[0])
+        else:
+            missing_levels.append(requested_level)
+    
+    if missing_levels:
+        logger.warning(
+            f"Requested levels not found in dataset: {missing_levels}\n"
+            f"Available levels: {sorted(all_levels)}"
+        )
+    
+    if not level_indices:
+        raise ValueError(
+            f"No valid levels found in dataset! "
+            f"Requested: {level_subset}\n"
+            f"Available: {sorted(all_levels)}"
+        )
+    
+    logger.info(f"Selecting {len(level_indices)} levels out of {original_levels} total")
+    logger.info(f"Selected levels: {[all_levels[i] for i in level_indices]}")
+    
+    # Use index-based selection to maintain lazy evaluation
+    # This is compatible with Dask and doesn't load data into memory
+    ds_subset = ds.isel({z_coordname: level_indices})
+    
+    subset_levels = ds_subset.sizes[z_coordname]
+    
+    logger.info(f"Vertical levels: {original_levels} → {subset_levels} ({subset_levels/original_levels*100:.1f}% retained)")
+    logger.info(f"Reduction: {original_levels - subset_levels} levels removed")
+    
+    # Add attribute to track the subsetting
+    ds_subset.attrs['level_subset_note'] = f'Vertical dimension subset to {len(level_subset)} specified levels using index selection'
+    ds_subset.attrs['level_subset_values'] = str(level_subset)
     
     return ds_subset
 

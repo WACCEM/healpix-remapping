@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from remap_to_healpix import process_to_healpix_zarr
 from src.utilities import get_era5_input_files
-from src.preprocessing import subset_time_by_interval
+from src.preprocessing import subset_time_by_interval, subset_vertical_levels
 
 def parse_args():
     """Parse command line arguments."""
@@ -201,14 +201,35 @@ def main():
     output_zarr = output_dir / f"{output_filename}.zarr"
     print(f"Output: {output_zarr}")
 
-    # Setup preprocessing function for time subsetting if specified
-    preprocessing_func = None
-    preprocessing_kwargs = None
+    # Setup preprocessing functions
+    preprocessing_func = []
+    preprocessing_kwargs = []
     
+    # Add vertical level subsetting if specified
+    level_subset = config.get('level_subset', None)
+    if level_subset:
+        z_coordname = config.get('z_coordname', 'level')
+        preprocessing_func.append(subset_vertical_levels)
+        preprocessing_kwargs.append({
+            'level_subset': level_subset,
+            'z_coordname': z_coordname
+        })
+        print(f"📊 Vertical level subsetting: {len(level_subset)} levels selected")
+        print(f"   Levels: {level_subset}")
+    
+    # Add time subsetting if specified
     if time_subset:
-        preprocessing_func = subset_time_by_interval
-        preprocessing_kwargs = {'time_subset': time_subset}
+        preprocessing_func.append(subset_time_by_interval)
+        preprocessing_kwargs.append({'time_subset': time_subset})
         print(f"⏰ Time subsetting: {time_subset} intervals")
+    
+    # Convert to single function/kwargs or None if empty
+    if not preprocessing_func:
+        preprocessing_func = None
+        preprocessing_kwargs = None
+    elif len(preprocessing_func) == 1:
+        preprocessing_func = preprocessing_func[0]
+        preprocessing_kwargs = preprocessing_kwargs[0]
     
     # Update config with input files
     additional_config = {
@@ -236,14 +257,14 @@ def main():
         )
         
         print("\n" + "="*80)
-        print("ERA5 3D processing completed!")
+        print("✅ ERA5 3D processing completed!")
         print("="*80)
         print(f"\nOutput saved to: {output_zarr}")
         return 0
         
     except Exception as e:
         print("\n" + "="*80)
-        print(f"ERROR during processing: {e}")
+        print(f"❌ ERROR during processing: {e}")
         print("="*80)
         import traceback
         traceback.print_exc()

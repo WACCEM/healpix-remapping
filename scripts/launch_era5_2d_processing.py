@@ -237,14 +237,14 @@ def main():
         )
         
         print("\n" + "="*80)
-        print("ERA5 2D processing completed!")
+        print("✅ ERA5 2D processing completed!")
         print("="*80)
         print(f"\nOutput saved to: {output_zarr}")
         return 0
         
     except Exception as e:
         print("\n" + "="*80)
-        print(f"ERROR during processing: {e}")
+        print(f"❌ ERROR during processing: {e}")
         print("="*80)
         import traceback
         traceback.print_exc()
