@@ -158,12 +158,15 @@ def main():
         print("")
         print("weights_file: \"/path/to/weights/scream_to_healpix_z{zoom}_weights.nc\"")
         print("")
-        print("Note: The file will be created automatically on first run if it doesn't exist,")
+        print("Note: Use {zoom} as a placeholder - it will be replaced with the actual zoom level.")
+        print("      The file will be created automatically on first run if it doesn't exist,")
         print("      then reused on subsequent runs for much faster processing.")
         print("="*70)
         sys.exit(1)
     
-    weights_file = str(Path(config['weights_file']))
+    # Format weights file path with zoom level
+    weights_file = config['weights_file'].format(zoom=zoom)
+    weights_file = str(Path(weights_file))
     if Path(weights_file).exists():
         print(f"Using existing weights file: {weights_file}")
     else:
