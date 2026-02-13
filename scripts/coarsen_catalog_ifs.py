@@ -773,7 +773,7 @@ def main():
 
     # Specify catalog information
     catalog_file = "https://digital-earths-global-hackathon.github.io/catalog/catalog.yaml"
-    catalog_location = "online"
+    catalog_location = "EU"
     catalog_source = "ifs_tco3999_rcbmf"
     catalog_params = {
         "zoom": 11,
@@ -782,7 +782,7 @@ def main():
     input_zoom = catalog_params['zoom']
 
     # Specify output directory
-    output_dir = "/pscratch/sd/w/wcmca1/hackathon/healpix/ifs_tco3999_rcbmf/"
+    output_dir = "/scratch/b/b381464/ifs_tco3999_rcbmf/"
 
     # Dictionary mapping input variable names to standard output names
     varout_dict = {
@@ -841,7 +841,7 @@ def main():
             logger.error("No data in specified date range. Exiting.")
             sys.exit(1)
     
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
 
     # Log temporal processing options
     if args.target_hours:
