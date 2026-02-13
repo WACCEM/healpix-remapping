@@ -587,7 +587,7 @@ def coarsen_healpix_data(ds, start_zoom, output_dir, target_zoom=0, temporal_fac
     # Update HEALPix metadata
     if 'crs' in coarsened_ds:
         coarsened_ds['crs'].attrs['healpix_nside'] = 2**zoom_level
-        coarsened_ds['crs'].attrs['healpix_order'] = zoom_level
+        # coarsened_ds['crs'].attrs['healpix_order'] = zoom_level
         logger.info(f"   Updated HEALPix nside to: {2**zoom_level}")
 
     # Add processing metadata
