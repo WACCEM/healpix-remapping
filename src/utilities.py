@@ -10,12 +10,14 @@ This module contains helper functions for:
 """
 
 import xarray as xr
+import numpy as np
 import pandas as pd
 import time
 import glob
 import re
 from datetime import datetime
 from pathlib import Path
+from functools import partial
 import logging
 import dask
 from dask.distributed import Client, LocalCluster
@@ -252,7 +254,149 @@ def convert_cftime_to_datetime64(ds):
         
         logger.info(f"Converted {len(ds.time)} time coordinates from {type(ds.time.values[0]).__name__} to datetime64")
         return ds_converted
-    
+
+    return ds
+
+
+# CF plural aliases for common non-standard time unit abbreviations
+_CF_UNIT_ALIASES = {
+    'day': 'days', 'd': 'days',
+    'hour': 'hours', 'hr': 'hours', 'h': 'hours',
+    'min': 'minutes', 'minute': 'minutes',
+    'sec': 'seconds', 'second': 'seconds', 's': 'seconds',
+}
+
+
+def _time_units_decodable(units, calendar=None):
+    """Return True if `units` can be decoded by xarray's CF time decoder."""
+    from xarray.coding.times import decode_cf_datetime
+    try:
+        decode_cf_datetime(np.array([0]), units, calendar)
+        return True
+    except Exception:
+        return False
+
+
+def normalize_time_units(units, calendar=None):
+    """
+    Repair a non-CF-compliant '<time> since <reference>' units string.
+
+    Conservative by design: if `units` already decodes successfully, it is
+    returned unchanged with a multiplier of 1. Only on failure does this
+    attempt a repair, by:
+      - splitting off a leading numeric multiplier (e.g. '1hour', '30min')
+        and mapping the unit word to its CF plural (hours, minutes, ...)
+      - zero-padding a ragged seconds field in the reference date
+        (e.g. '08:00:0.0' -> '08:00:00')
+
+    Parameters:
+    -----------
+    units : str
+        Raw units attribute, e.g. '1hour since 2020-01-02 08:00:0.0'
+    calendar : str, optional
+        CF calendar name, if specified on the time variable
+
+    Returns:
+    --------
+    tuple : (cf_units, multiplier)
+        cf_units : str - a units string that decode_cf_datetime accepts
+        multiplier : int - scale factor to apply to the raw time values
+                     before using cf_units (1 if no repair was needed)
+
+    Raises:
+    -------
+    ValueError : If `units` cannot be parsed or the repaired string still
+                 fails to decode
+
+    Examples:
+    ---------
+    >>> normalize_time_units('1hour since 2020-01-02 08:00:0.0')
+    ('hours since 2020-01-02 08:00:00', 1)
+    >>> normalize_time_units('30min since 2020-01-01 00:00:0.0')
+    ('minutes since 2020-01-01 00:00:00', 30)
+    >>> normalize_time_units('hours since 2020-01-01 00:00:00')
+    ('hours since 2020-01-01 00:00:00', 1)
+    """
+    if _time_units_decodable(units, calendar):
+        return units, 1
+
+    match = re.match(r'^\s*(\d*)\s*([A-Za-z]+)\s+since\s+(.+)$', units)
+    if not match:
+        raise ValueError(f"Cannot parse non-standard time units: {units!r}")
+
+    mult_str, unit_word, reference = match.groups()
+    multiplier = int(mult_str) if mult_str else 1
+    cf_unit = _CF_UNIT_ALIASES.get(unit_word.lower().rstrip('s'), unit_word.lower())
+
+    # Zero-pad a ragged seconds field, e.g. '08:00:0.0' -> '08:00:00'
+    reference = re.sub(
+        r'(\d{1,2}:\d{2}):(\d{1,2}(?:\.\d+)?)\s*$',
+        lambda m: f"{m.group(1)}:{int(float(m.group(2))):02d}",
+        reference.strip()
+    )
+
+    cf_units = f"{cf_unit} since {reference}"
+    if not _time_units_decodable(cf_units, calendar):
+        raise ValueError(
+            f"Failed to normalize non-standard time units {units!r} "
+            f"(repaired to {cf_units!r}, which still doesn't decode)"
+        )
+
+    logger.info(f"Normalized non-standard time units {units!r} -> {cf_units!r} (x{multiplier})")
+    return cf_units, multiplier
+
+
+def fix_nonstandard_time(ds, time_dim='time', rename_variables=None, use_cftime=True):
+    """
+    Per-file preprocessing hook that repairs a non-CF-compliant time
+    coordinate, then decodes the dataset with xr.decode_cf().
+
+    Intended for use as the `preprocess=` argument of xr.open_mfdataset()
+    when opened with decode_times=False, since some datasets (e.g. GsMAP)
+    store the reference date only in the per-file `units` attribute -
+    repairing it after concatenation would lose all but the first file's
+    reference date.
+
+    Parameters:
+    -----------
+    ds : xarray.Dataset
+        A single, not-yet-time-decoded dataset (decode_times=False)
+    time_dim : str
+        Name of the time coordinate/dimension to repair (default: 'time')
+    rename_variables : dict, optional
+        Mapping of {existing_name: new_name} applied after decoding, e.g.
+        {'Time': 'time', 'Latitude': 'latitude', 'Longitude': 'longitude'}.
+        Keys not present in the dataset are silently skipped.
+    use_cftime : bool
+        Passed through to the CF time decoder (default: True)
+
+    Returns:
+    --------
+    xarray.Dataset : Time-decoded (and optionally renamed) dataset
+    """
+    if time_dim in ds.variables and 'units' in ds[time_dim].attrs:
+        time_var = ds[time_dim]
+        cf_units, multiplier = normalize_time_units(
+            time_var.attrs['units'], time_var.attrs.get('calendar')
+        )
+        if cf_units != time_var.attrs['units'] or multiplier != 1:
+            new_values = time_var.values * multiplier
+            ds = ds.assign_coords({time_dim: time_var.copy(data=new_values)})
+            ds[time_dim].attrs = {**time_var.attrs, 'units': cf_units}
+
+    # xr.decode_cf's `use_cftime` kwarg is deprecated in newer xarray in favor
+    # of a CFDatetimeCoder passed via decode_times; support both.
+    if hasattr(xr, 'coders'):
+        ds = xr.decode_cf(ds, decode_times=xr.coders.CFDatetimeCoder(use_cftime=use_cftime))
+    else:
+        ds = xr.decode_cf(ds, use_cftime=use_cftime)
+
+    if rename_variables:
+        applicable = {k: v for k, v in rename_variables.items()
+                      if k in ds.variables or k in ds.dims}
+        if applicable:
+            ds = ds.rename(applicable)
+
     return ds
 
 
@@ -711,8 +855,9 @@ def get_era5_input_files(start_date, end_date, base_dir=None, variables=None,
     return variable_files
 
 
-def read_concat_files(files, time_chunk_size=48, spatial_dims={'lat': -1, 'lon': -1}, 
-                      max_retries=5, concat_dim='time', combine_vars=False):
+def read_concat_files(files, time_chunk_size=48, spatial_dims={'lat': -1, 'lon': -1},
+                      max_retries=5, concat_dim='time', combine_vars=False,
+                      fix_time_units=False, rename_variables=None, use_cftime=True):
     """
     Read multiple NetCDF files and concatenate along time dimension with validation.
     
@@ -748,7 +893,20 @@ def read_concat_files(files, time_chunk_size=48, spatial_dims={'lat': -1, 'lon':
         If True and files is a dict, merge datasets from different variables.
         Each variable's files are concatenated along concat_dim, then merged.
         (default: False)
-        
+    fix_time_units : bool
+        If True, open files with decode_times=False and repair non-CF-compliant
+        time units per file (via fix_nonstandard_time()) before decoding.
+        Use this for datasets whose time `units` attribute is non-standard,
+        e.g. GsMAP's "1hour since 2020-01-02 08:00:0.0" with a per-file
+        reference date. Default: False (unchanged, existing behavior).
+    rename_variables : dict, optional
+        Mapping of {existing_name: new_name} applied while fixing time units
+        (only used when fix_time_units=True), e.g.
+        {'Time': 'time', 'Latitude': 'latitude', 'Longitude': 'longitude'}.
+    use_cftime : bool
+        Only used when fix_time_units=True; passed to the CF time decoder
+        after the units are repaired (default: True).
+
     Returns:
     --------
     xr.Dataset : Loaded and validated dataset with files concatenated along concat_dim
@@ -828,12 +986,15 @@ def read_concat_files(files, time_chunk_size=48, spatial_dims={'lat': -1, 'lon':
             
             # Read this variable's files (recursive call with list)
             var_ds = read_concat_files(
-                var_files, 
+                var_files,
                 time_chunk_size=time_chunk_size,
                 spatial_dims=spatial_dims,
                 max_retries=max_retries,
                 concat_dim=concat_dim,
-                combine_vars=False  # Already at single-variable level
+                combine_vars=False,  # Already at single-variable level
+                fix_time_units=fix_time_units,
+                rename_variables=rename_variables,
+                use_cftime=use_cftime
             )
             var_datasets[var_name] = var_ds
         
@@ -855,7 +1016,37 @@ def read_concat_files(files, time_chunk_size=48, spatial_dims={'lat': -1, 'lon':
     
     # Open multi-file dataset with time chunking for better parallelism
     logger.info("Opening multi-file dataset...")
-    
+
+    # Build time-decoding kwargs. By default, let xarray decode CF time
+    # units directly. If fix_time_units=True (e.g. GsMAP's non-standard
+    # "1hour since ..." units with a per-file reference date), open with
+    # decode_times=False and repair + decode each file individually via
+    # `preprocess`, since the repair must happen before files are combined.
+    if fix_time_units:
+        # `preprocess` runs on each file before renaming, so it needs the
+        # *original* (pre-rename) time dimension name. Derive it from
+        # rename_variables by inverting {orig_name: new_name} -> looking up
+        # which orig_name maps to concat_dim (the post-rename name used for
+        # concatenation). Falls back to concat_dim itself if no rename maps
+        # to it (i.e. the source file already uses concat_dim's name).
+        raw_time_dim = concat_dim
+        if rename_variables:
+            inverse_rename = {new: orig for orig, new in rename_variables.items()}
+            raw_time_dim = inverse_rename.get(concat_dim, concat_dim)
+
+        time_kwargs = dict(
+            decode_times=False,
+            preprocess=partial(
+                fix_nonstandard_time,
+                time_dim=raw_time_dim,
+                rename_variables=rename_variables,
+                use_cftime=use_cftime
+            )
+        )
+        logger.info(f"fix_time_units=True: repairing non-standard time units on '{raw_time_dim}' per file")
+    else:
+        time_kwargs = dict(decode_times=True, use_cftime=True)
+
     for attempt in range(max_retries):
         try:
             # Open with robust settings for large datasets on HPC systems
@@ -867,9 +1058,8 @@ def read_concat_files(files, time_chunk_size=48, spatial_dims={'lat': -1, 'lon':
                 compat='override',        # Handle minor metadata conflicts
                 data_vars='minimal',      # Only load variables present in all files
                 coords='minimal',         # Only load coordinates present in all files
-                decode_times=True,
-                use_cftime=True,          # Use cftime to handle various calendars
-                chunks=chunks
+                chunks=chunks,
+                **time_kwargs
             )
             
             logger.info(f"Dataset loaded: {ds.sizes}")

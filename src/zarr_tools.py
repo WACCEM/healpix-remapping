@@ -9,6 +9,7 @@ This module contains functions for:
 """
 
 import xarray as xr
+import numpy as np
 import zarr
 import shutil
 import time
@@ -234,5 +235,155 @@ def write_zarr_with_monitoring(ds_remap, output_zarr, time_chunk_size=48, zoom=9
     zarr_time = time.time() - zarr_start_time
     logger.info("✅ Zarr write completed successfully!")
     logger.info(f"Zarr write completed in {zarr_time/60:.1f} minutes")
-    
+
+    return ds_remap_chunked, zarr_time
+
+
+def write_zarr_region(ds_remap, store_path, time_chunk_size=24, zoom=9):
+    """
+    Write a dataset into a pre-existing time region of a shared Zarr store.
+
+    Companion to write_zarr_with_monitoring() for parallel multi-task writes:
+    many independent processes (e.g. one per year in a SLURM job array) each
+    write a disjoint time slice into ONE store created ahead of time by
+    scripts/init_healpix_store.py, instead of each writing a separate store
+    that must later be merged.
+
+    Safety depends entirely on time-chunk alignment: the region this dataset
+    occupies in the store MUST start and end on a multiple of the store's
+    time chunk size, so that no two concurrent writers ever touch the same
+    chunk file. This is verified (along with the exact time values and
+    variable set) *before* any bytes are written, and xarray's own
+    `safe_chunks` check (left at its default of True) verifies it again.
+
+    Parameters:
+    -----------
+    ds_remap : xr.Dataset
+        Remapped dataset to write. Must have a 'time' dimension whose values
+        are an exact, contiguous subset of the store's existing time axis.
+    store_path : str
+        Path to the PRE-EXISTING Zarr store (see scripts/init_healpix_store.py).
+        Unlike write_zarr_with_monitoring(), this function never creates or
+        deletes a store - it only writes into one that already exists.
+    time_chunk_size : int
+        Must match the time chunk size the store was created with (default: 24)
+    zoom : int
+        HEALPix zoom level, used to compute the spatial chunk size so the
+        written blocks line up with the store's on-disk chunks
+
+    Returns:
+    --------
+    tuple : (ds_remap_chunked, write_time_seconds)
+        Chunked dataset and write time in seconds
+
+    Raises:
+    -------
+    FileNotFoundError : If store_path does not exist
+    ValueError : If the dataset's time range isn't found at a chunk-aligned
+                 offset in the store, or if its variables aren't a subset of
+                 the store's variables
+
+    Notes:
+    ------
+    - Does NOT write consolidated metadata (consolidated=False) - with many
+      concurrent writers, that must be done exactly once after all tasks
+      finish, e.g. `zarr.consolidate_metadata(store_path)`.
+    - Coordinates that lack a 'time' dimension ('cell', 'crs' for HEALPix
+      output) are dropped before writing - they were already written once
+      when the store was initialized, and a region write only accepts
+      variables along the dimension(s) being regioned.
+    """
+    store_path = Path(store_path)
+    if not store_path.exists():
+        raise FileNotFoundError(
+            f"Region store does not exist: {store_path}\n"
+            f"Create it first with scripts/init_healpix_store.py"
+        )
+
+    logger.info(f"Opening region store for alignment check: {store_path}")
+    store_ds = xr.open_zarr(store_path, consolidated=True)
+    store_time = store_ds['time'].values
+
+    n_time = ds_remap.sizes['time']
+    ds_start = ds_remap['time'].values[0]
+    ds_end = ds_remap['time'].values[-1]
+
+    i0 = int(np.searchsorted(store_time, ds_start))
+    i1 = i0 + n_time
+
+    # Verify exact endpoint match - not just "close enough" - before touching
+    # anything. searchsorted finds an insertion point even for values that
+    # aren't present, so this equality check is what actually confirms
+    # ds_remap is a real, contiguous subset of the store's time axis.
+    if i0 >= len(store_time) or store_time[i0] != ds_start:
+        raise ValueError(
+            f"Dataset start time {ds_start} not found in region store's time axis "
+            f"(store spans {store_time[0]} to {store_time[-1]})"
+        )
+    if i1 > len(store_time) or store_time[i1 - 1] != ds_end:
+        found = store_time[i1 - 1] if i1 <= len(store_time) else 'out of range'
+        raise ValueError(
+            f"Dataset end time {ds_end} not found at the expected offset in region store "
+            f"(expected store_time[{i1 - 1}] == {ds_end}, got {found})"
+        )
+
+    # The load-bearing safety check: without chunk alignment, two concurrent
+    # writers could race on the same chunk file.
+    if i0 % time_chunk_size != 0 or i1 % time_chunk_size != 0:
+        raise ValueError(
+            f"Region [{i0}:{i1}] is not aligned to the store's time_chunk_size="
+            f"{time_chunk_size}. Writing an unaligned region risks corrupting a "
+            f"neighboring writer's chunk - refusing.\n"
+            f"i0 % {time_chunk_size} = {i0 % time_chunk_size}, "
+            f"i1 % {time_chunk_size} = {i1 % time_chunk_size}"
+        )
+
+    missing_vars = set(ds_remap.data_vars) - set(store_ds.data_vars)
+    if missing_vars:
+        raise ValueError(
+            f"Dataset has variable(s) not present in region store: {missing_vars}\n"
+            f"Store variables: {list(store_ds.data_vars)}"
+        )
+    store_ds.close()
+
+    logger.info(f"Region-write target: time[{i0}:{i1}] ({ds_start} to {ds_end}), "
+                f"{n_time} steps")
+
+    # Calculate optimal spatial chunk size based on zoom level (must match
+    # the chunking used when the store was initialized)
+    spatial_chunk_size = chunk_tools.compute_chunksize(order=zoom)
+    logger.info(f"Rechunking for region write: time={time_chunk_size}, spatial={spatial_chunk_size}")
+    ds_remap_chunked = ds_remap.chunk({
+        'time': time_chunk_size,
+        'cell': spatial_chunk_size
+    })
+
+    # Drop coords that don't vary along 'time' - a region write only accepts
+    # variables along the dimension(s) being regioned, and 'cell'/'crs' were
+    # already written once when the store was initialized.
+    drop_coords = [c for c in ds_remap_chunked.coords if 'time' not in ds_remap_chunked[c].dims]
+    if drop_coords:
+        logger.info(f"Dropping non-time coords for region write: {drop_coords}")
+        ds_remap_chunked = ds_remap_chunked.drop_vars(drop_coords)
+
+    logger.info(f"Writing region to Zarr: {store_path}")
+    zarr_start_time = time.time()
+    logger.info(f"Region size: {ds_remap_chunked.nbytes / 1024**3:.2f} GB")
+
+    try:
+        with ProgressBar():
+            ds_remap_chunked.to_zarr(
+                store_path,
+                region={'time': slice(i0, i1)},
+                mode='r+',            # write into the existing store; never touch its metadata
+                consolidated=False,   # consolidate once at the end, not once per concurrent writer
+            )
+    except Exception as e:
+        logger.error(f"Error during region write: {e}")
+        raise
+
+    zarr_time = time.time() - zarr_start_time
+    logger.info("✅ Region write completed successfully!")
+    logger.info(f"Region write completed in {zarr_time/60:.1f} minutes")
+
     return ds_remap_chunked, zarr_time

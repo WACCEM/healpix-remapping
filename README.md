@@ -23,6 +23,10 @@ A high-performance, scalable pipeline for remapping **any gridded NetCDF dataset
 
 **ERA5 Multi-Variable Support** - Custom processing scripts for ERA5 2D (surface) and 3D (pressure level) variables with flexible time/level subsetting and parallel merge utility.
 
+**Non-Standard Time Attribute Handling** - New `fix_time_units` / `rename_variables` / `use_cftime` config options repair non-CF-compliant time coordinates (e.g. GsMAP's per-file `"1hour since 2020-01-02 08:00:0.0"` units, with the true reference date living only in that string) before decoding, and rename non-standard dimension/coordinate names to the pipeline's expected conventions. Fully opt-in - default behavior is unchanged. See `config/gsmap_config.yaml` for a working example.
+
+**Parallel Multi-Year Processing** - New `init_healpix_store.py` / `submit_gsmap_array.sh` / `check_healpix_store.py` workflow processes many years as independent parallel SLURM array tasks, each writing directly into its own chunk-aligned time region of ONE shared Zarr store (`--region-store`) - no separate merge step required. Validated processing 15 years (2010-2024) of GsMAP hourly data in 1h36m wall-clock, 607 GB output, 0 missing chunks.
+
 ## Features
 
 - **Multiple Grid Types Supported**: Regular lat/lon grids (1D/2D) and unstructured grids (SCREAM, E3SM)
@@ -199,6 +203,31 @@ dask:
 - ✅ Write throughput: 21.2 GB/minute
 - ✅ No deadlocks or OOM issues
 - ✅ Scales linearly (or better) with data size
+
+**g) Non-Standard Time Attribute Handling (OPTIONAL):**
+
+Some datasets store time coordinates with non-CF-compliant `units` attributes that xarray cannot decode directly. For example, GsMAP v8 stores:
+
+```
+int Time(Time) ;
+    Time:units = "1hour since 2020-01-02 08:00:0.0" ;
+```
+
+CF requires a bare unit name (`"hours"`, not `"1hour"`) and zero-padded seconds - `xr.open_mfdataset()` fails with `unable to decode time units ... Try opening your dataset with decode_times=False`. GsMAP additionally stores only a single time step per file (`Time = [0]`), with the true reference date living entirely in that per-file `units` string - so the fix must happen **per file, before concatenation**, not on the combined dataset afterward (fixing it after combining would silently collapse every file's timestamp to the first file's date).
+
+```yaml
+# Opt-in - all three keys default to the prior behavior when omitted
+fix_time_units: true    # Repair non-CF-compliant `units` per file, then decode
+use_cftime: false        # Decode straight to datetime64 (default True, matching prior behavior)
+rename_variables:        # Optional: rename dims/coords AFTER decoding
+  Time: time
+  Latitude: latitude
+  Longitude: longitude
+```
+
+When `fix_time_units: true`, each file is opened with `decode_times=False`; its `units` attribute is repaired (a leading multiplier like `1hour` is folded into the values, not discarded, and the seconds field is zero-padded) via `src.utilities.normalize_time_units()`, then decoded with `xr.decode_cf()` inside `src.utilities.fix_nonstandard_time()`, which is used as the `preprocess=` hook for `xr.open_mfdataset()`. `rename_variables` runs immediately after decoding, so downstream steps (temporal averaging, remapping, Zarr writing) see the pipeline's expected lowercase `time`/`lat`/`lon`-style names regardless of what the source files use.
+
+See `config/gsmap_config.yaml` for a complete working configuration.
 
 ### 4. Test Your File Pattern Configuration
 
@@ -487,6 +516,61 @@ python merge_era5_zarr.py 3d.zarr 2d.zarr -o merged.zarr --no-parallel
 python merge_era5_zarr.py 3d.zarr 2d.zarr -o merged.zarr --rechunk
 ```
 
+## Parallel Multi-Year Processing (Region Writes)
+
+For datasets spanning many years (e.g. climate-length hourly records), processing everything in a single job risks running past any reasonable wall-clock limit, while writing one Zarr store per chunk of years (e.g. one every 5 years) requires a separate, expensive merge pass afterward - a full read-and-rewrite of all the data just to concatenate along time.
+
+The `init_healpix_store.py` / `submit_gsmap_array.sh` / `check_healpix_store.py` workflow avoids both: many independent SLURM array tasks (e.g. one per year) write **directly and in parallel into disjoint, chunk-aligned time regions of one pre-created Zarr store** - no merge step at all.
+
+### How it works
+
+1. **`init_healpix_store.py`** creates an empty, fully-shaped store spanning the whole time range (e.g. 15 years) - only metadata and the `time`/`cell`/`crs` coordinates are written, no data chunks. The exact variable schema (names, dtypes, attrs) is derived by running the real read + remap pipeline on one sample day, so it always matches what the processing tasks will produce.
+2. **Each array task** (see `submit_gsmap_array.sh`) runs the normal launcher script with a new `--region-store <path>` flag, which writes that task's data into its exact time slice via `src.zarr_tools.write_zarr_region()`, instead of creating a new standalone store.
+3. **Safety**: a region write is only accepted if it starts and ends exactly on a multiple of the store's time-chunk size - this is what guarantees concurrent tasks can never touch the same on-disk chunk file. Both `init_healpix_store.py` (before creating the store) and `write_zarr_region()` (before writing) verify this, and reject an unaligned or out-of-range write with a clear error rather than risk silent corruption.
+4. **`check_healpix_store.py`** checks completeness by chunk-file existence after all tasks finish (Zarr does not skip all-NaN chunks, so this is a reliable, cheap check with no need to read any data), and prints ready-to-run `sbatch` resubmit commands for any incomplete years.
+
+Each year's write is idempotent and touches only its own chunks, so a failed or resubmitted task is always safe to re-run.
+
+### Usage
+
+```bash
+cd scripts
+
+# 1. Once, interactively: create the empty store for the full time range
+python init_healpix_store.py -c ../config/gsmap_config.yaml \
+    --start-year 2010 --end-year 2024 -z 9 \
+    -o /path/to/output/GsMAPv8_1H_zoom9_20100101_20241231.zarr
+
+# 2. Submit the array (one task per year, throttled to 5 concurrent)
+sbatch --export=STORE=/path/to/output/GsMAPv8_1H_zoom9_20100101_20241231.zarr \
+    submit_gsmap_array.sh
+
+# 3. After all tasks finish, check completeness and consolidate metadata
+python check_healpix_store.py /path/to/output/GsMAPv8_1H_zoom9_20100101_20241231.zarr \
+    --start-year 2010 --end-year 2024
+python -c "import zarr; zarr.consolidate_metadata('/path/to/output/GsMAPv8_1H_zoom9_20100101_20241231.zarr')"
+```
+
+### Performance: GsMAP 2010-2024 (validated on NERSC Perlmutter)
+
+15 years of hourly GsMAP data (131,496 files, zoom 9, 2 variables) processed as 15 array tasks, 5 concurrent, 1 exclusive node (128 cores) each:
+
+| Metric | Value |
+|---|---|
+| Total wall-clock (submit → last task done) | 1h 36m |
+| Per-year task time | 22.0-23.9 min (avg ~22.9 min) |
+| Total node-time | 5.7 node-hours |
+| Output size | 607 GB compressed (~40.5 GB/year) |
+| Completeness | 15/15 years, 0 missing chunks |
+| Exit codes | 15/15 tasks exit 0 |
+
+Per-task breakdown (consistent across all 15 years):
+- File read + concatenate (8,760-8,784 files): ~2.8-3.4 min
+- HEALPix remap (graph construction, lazy): ~7-9 sec
+- Region write to Zarr (~205 GB/year): ~19.0-19.5 min (~10.7 GB/min)
+
+A handful of tasks (5 of 15) logged transient Dask worker restarts or scheduler-heartbeat retries during the large rechunk/shuffle step, all automatically recovered with no effect on the final result - normal behavior for large rechunk operations under memory pressure, not specific to the region-write design.
+
 ## Project Structure
 
 ```
@@ -501,7 +585,8 @@ healpix-remapping/
 │   ├── scream_ne1024_1H_config.yaml   # SCREAM ne1024 high-res configuration
 │   ├── scream_ne120_3H_config.yaml    # SCREAM ne120 standard configuration
 │   ├── era5_2d_config.yaml            # ERA5 2D surface variables configuration
-│   └── era5_3d_config.yaml            # ERA5 3D pressure level configuration
+│   ├── era5_3d_config.yaml            # ERA5 3D pressure level configuration
+│   └── gsmap_config.yaml              # GsMAP configuration (non-standard time handling example)
 │
 ├── scripts/                            # Execution scripts
 │   ├── launch_imerg_processing.py     # IMERG launcher
@@ -509,7 +594,11 @@ healpix-remapping/
 │   ├── launch_scream_processing.py    # SCREAM launcher
 │   ├── launch_era5_2d_processing.py   # ERA5 2D surface launcher
 │   ├── launch_era5_3d_processing.py   # ERA5 3D pressure level launcher
+│   ├── launch_gsmap_processing.py     # GsMAP launcher (supports --region-store)
 │   ├── merge_era5_zarr.py             # Merge ERA5 2D and 3D outputs
+│   ├── init_healpix_store.py          # Create empty multi-year store for parallel region writes
+│   ├── submit_gsmap_array.sh          # SLURM array template (one task per year)
+│   ├── check_healpix_store.py         # Chunk-level completeness checker for region-written stores
 │   ├── coarsen_healpix.py             # HEALPix coarsening utility
 │   └── example_usage.py               # 4 dataset examples
 │

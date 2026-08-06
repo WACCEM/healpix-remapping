@@ -181,7 +181,7 @@ warnings.filterwarnings('ignore', category=UserWarning)
 def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
                            weights_file=None, overwrite=False, time_average=None,
                            preprocessing_func=None, preprocessing_kwargs=None,
-                           config=None):
+                           config=None, region_store=None):
     r"""
     Main function to process gridded lat/lon datasets to HEALPix Zarr format.
     
@@ -200,11 +200,14 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
     zoom : int
         HEALPix zoom level (order)
     output_zarr : str
-        Output Zarr path
+        Output Zarr path. Still required even when region_store is set (used
+        for logging only in that case - see region_store below).
     weights_file : str, optional
         Weights file path for caching remapping weights
     overwrite : bool, default=False
-        If True, overwrite existing Zarr files; if False, error on existing files
+        If True, overwrite existing Zarr files; if False, error on existing files.
+        Ignored when region_store is set (region writes always replace their
+        own target region, by construction).
     time_average : str, optional
         Temporal averaging frequency (e.g., "1h", "3h", "6h", "1d")
         If None, no averaging is applied
@@ -213,6 +216,14 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
         Can be a single function or a list of functions to apply in sequence.
     preprocessing_kwargs : dict or list of dicts, optional
         Keyword arguments to pass to preprocessing function(s)
+    region_store : str, optional
+        Path to a PRE-EXISTING HEALPix Zarr store (created by
+        scripts/init_healpix_store.py) to write this date range's data into,
+        at its aligned time-region, via zarr_tools.write_zarr_region().
+        Used for parallel multi-task processing (e.g. one SLURM array task
+        per year) into a single shared store, avoiding a separate merge step.
+        If None (default), behavior is unchanged: writes a new standalone
+        Zarr store at output_zarr via zarr_tools.write_zarr_with_monitoring().
     config : dict, optional
         Configuration dictionary containing processing parameters. If provided,
         individual parameters will be extracted from this dictionary. Required keys:
@@ -317,7 +328,10 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
     remap_variables = config.get('remap_variables', None)
     input_files = config.get('input_files', None)  # Pre-searched files (ERA5)
     combine_vars = config.get('combine_vars', False)  # Merge multi-variable files
-    
+    fix_time_units = config.get('fix_time_units', False)  # Repair non-CF-compliant time units (e.g. GsMAP)
+    rename_variables = config.get('rename_variables', None)  # Applied when fix_time_units=True
+    use_cftime = config.get('use_cftime', True)
+
     logger.info("="*70)
     logger.info("Configuration Summary")
     logger.info("="*70)
@@ -332,6 +346,10 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
         logger.info(f"Required dimensions: {required_dimensions}")
     if remap_variables:
         logger.info(f"Remap variables: {remap_variables}")
+    if fix_time_units:
+        logger.info(f"⚠️  Non-standard time units workaround enabled (fix_time_units=True)")
+        if rename_variables:
+            logger.info(f"   Rename map: {rename_variables}")
     logger.info("="*70)
     
     # Get file list for date range FIRST (needed for auto-detection)
@@ -385,11 +403,14 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
         logger.info("🔄 Step 1: Reading files and concatenating along time dimension...")
         step_start = time.time()
         ds = utilities.read_concat_files(
-            files, 
+            files,
             time_chunk_size=time_chunk_size,
             spatial_dims=spatial_chunks,
             concat_dim=concat_dim,
-            combine_vars=combine_vars  # Merge multi-variable files (ERA5)
+            combine_vars=combine_vars,  # Merge multi-variable files (ERA5)
+            fix_time_units=fix_time_units,
+            rename_variables=rename_variables,
+            use_cftime=use_cftime
         )
         step_time = time.time() - step_start
         logger.info(f"✅ Step 1 completed in {step_time/60:.1f} minutes")
@@ -476,11 +497,20 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
                 logger.info(f"Updated variables: {list(ds_remap.data_vars)}")
 
         # Write to Zarr with optimal chunking and monitoring
-        logger.info("🔄 Step 4: Writing to Zarr...")
         step_start = time.time()
-        ds_remap_chunked, zarr_time = zarr_tools.write_zarr_with_monitoring(
-            ds_remap, output_zarr, time_chunk_size, zoom, overwrite
-        )
+        if region_store:
+            # Parallel multi-task mode: write into a time-aligned region of a
+            # pre-existing shared store instead of creating a standalone one.
+            logger.info("🔄 Step 4: Writing to region of existing Zarr store...")
+            ds_remap_chunked, zarr_time = zarr_tools.write_zarr_region(
+                ds_remap, region_store, time_chunk_size, zoom
+            )
+            output_zarr = region_store  # for the summary log below
+        else:
+            logger.info("🔄 Step 4: Writing to Zarr...")
+            ds_remap_chunked, zarr_time = zarr_tools.write_zarr_with_monitoring(
+                ds_remap, output_zarr, time_chunk_size, zoom, overwrite
+            )
         logger.info(f"✅ Step 4 completed in {zarr_time/60:.1f} minutes")
         
         # Overall timing summary

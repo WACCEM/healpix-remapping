@@ -1,0 +1,127 @@
+# GsMAP to HEALPix Processing Configuration
+# Optimized for NERSC Perlmutter (128-core, 512GB RAM compute nodes)
+
+# Data paths
+input_base_dir: "/pscratch/sd/w/wcmca1/GsMAP/orig/"
+output_base_dir: "/pscratch/sd/w/wcmca1/GsMAP/healpix/"
+output_basename: "GsMAPv8"
+weights_dir: "/pscratch/sd/w/wcmca1/GsMAP/weights/"
+
+# File search pattern configuration
+# These parameters control how files are discovered and filtered by date
+# Filename format: gsmap_mvk.20201231.0000.v8.0000.1.nc
+date_pattern: "\\.(\\d{8}\\.\\d{4})"   # Regex to extract YYYYMMDD.HHMM (date + hour/minute between dots)
+date_format: "%Y%m%d.%H%M"        # strptime format: YYYY=year, MM=month, DD=day, HH=hour, MM=minute
+file_glob: "gsmap_mvk.*.nc"       # Glob pattern to match GsMAP files
+use_year_subdirs: true            # Files organized in yearly subdirectories (YYYY/)
+
+# Non-standard time attribute workaround
+# GsMAP stores the Time coordinate as a single-element array (Time=[0]) with
+# a non-CF-compliant, per-file `units` attribute carrying the actual
+# reference date, e.g. Time:units = "1hour since 2020-01-02 08:00:0.0"
+# (CF requires "hours since ..." with zero-padded seconds). Because the
+# reference date differs per file, this must be repaired per file at open
+# time (before concatenation) - see fix_time_units in read_concat_files().
+fix_time_units: true   # Repair non-CF-compliant Time:units per file, then decode
+use_cftime: false      # Decode straight to datetime64 (data uses the standard calendar)
+concat_dim: "time"     # Concatenate along the renamed 'time' dimension (see rename_variables)
+
+# GsMAP source files use capital-letter dimension/coordinate names; rename to
+# lowercase so they match the rest of the pipeline (temporal averaging,
+# remapping, zarr writing all assume lowercase 'time'/'latitude'/'longitude').
+# Applied together with the fix_time_units workaround above.
+rename_variables:
+  Time: time
+  Latitude: latitude
+  Longitude: longitude
+
+# Processing parameters
+default_zoom: 9
+time_chunk_size: 24  # 1 day worth of 1-hour data (balance memory vs parallelism)
+time_average: null  # Options: null (no averaging), "1h" (1-hour), "3h", "6h", "1d" (daily), etc.
+original_time_suffix: "1H"  # Time resolution of source data for output filename (e.g., '30MIN', '1H', '1D')
+convert_time: True   # No-op here since use_cftime=false already decodes to datetime64; kept for backward compatibility
+
+# Spatial dimension configuration
+# IMPORTANT: For 2D grids, explicitly specify both x_dimname and y_dimname to avoid ambiguity
+# These define which dimensions represent the spatial axes in your data
+x_dimname: longitude       # Name of x spatial dimension (longitude)
+y_dimname: latitude        # Name of y spatial dimension (latitude)
+
+# Coordinate variable names (if different from dimension names)
+x_coordname: longitude      # Name of longitude coordinate variable
+y_coordname: latitude      # Name of latitude coordinate variable
+
+# Spatial chunking specification
+# Use -1 for no chunking (keep full dimension in memory - recommended for remapping)
+# Names must match the post-rename dimension names above (longitude/latitude)
+spatial_dimensions:
+  longitude: -1   # Full longitude dimension in single chunk
+  latitude: -1    # Full latitude dimension in single chunk
+
+# Coordinate variable names (if different from dimension names)
+# Uncomment and modify if your dataset uses different coordinate variable names
+# lon_name: lon          # Name of longitude coordinate variable
+# lat_name: lat          # Name of latitude coordinate variable
+
+# Examples for different grid types:
+# 
+# Standard IMERG (lat/lon grid):
+#   x_dimname: lon
+#   y_dimname: lat
+#   spatial_dimensions:
+#     lon: -1
+#     lat: -1
+#
+# WRF output (custom dimension names):
+#   x_dimname: west_east
+#   y_dimname: south_north
+#   x_coordname: XLONG        # WRF uses XLONG for longitude coordinate
+#   y_coordname: XLAT         # WRF uses XLAT for latitude coordinate
+#   spatial_dimensions:
+#     west_east: -1
+#     south_north: -1
+#
+# E3SM/SCREAM (unstructured grid):
+#   x_dimname: ncol        # Only x_dimname needed for unstructured grids
+#   spatial_dimensions:
+#     ncol: -1
+#
+# CMIP6 (varies by model):
+#   x_dimname: i           # or 'lon', 'x', depending on model
+#   y_dimname: j           # or 'lat', 'y', depending on model
+#   x_coordname: longitude    # or 'lon', 'LONGITUDE'
+#   y_coordname: latitude     # or 'lat', 'LATITUDE'
+#   spatial_dimensions:
+#     i: -1
+#     j: -1
+
+# Note: spatial_chunk_size is automatically computed based on zoom level using chunk_tools.compute_chunksize()
+force_recompute: False    # Force recompute weight file even if it exists
+
+# Dask configuration - SIMPLIFIED for I/O-intensive zarr writes
+# Hardware: 2x AMD EPYC 7763 (128 cores total), 512 GB RAM
+# Strategy: More workers with single thread optimal for I/O operations
+dask:
+  n_workers: 16              # More workers = better parallel I/O throughput
+  threads_per_worker: 1      # Single thread avoids GIL contention during I/O
+  # memory_limit: auto        # Auto-calculated: 80% of 512GB / 16 workers ≈ 25GB per worker
+  
+  # Note: memory_limit commented out to use auto-calculation from system memory
+  # This prevents worker pausing at 80% that causes zarr write deadlocks
+  
+# Compression settings for Zarr
+compression:
+  compressor: "zstd"
+  compressor_level: 3
+  dtype: "float32"
+
+# Variable filtering
+skip_variables:
+  - observationTimeFlag
+  - reliabilityFlag
+  - snowProbability
+
+# Only process variables with these dimensions (post-rename names)
+required_dimensions:
+  - ["time", "latitude", "longitude"]
