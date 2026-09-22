@@ -257,13 +257,21 @@ if __name__ == "__main__":
     # Uncomment and modify for your use case:
     
     test_directory_scan(
-        base_dir="/global/cfs/cdirs/e3sm/beydoun/ne1024pg2_ne1024pg2.F2010-SCREAMv1.10022025.CESS2.P0K.n2048.2/run",
-        date_pattern=r'\.(\d{4}-\d{2}-\d{2})-',
-        date_format='%Y-%m-%d',
-        use_year_subdirs=False,
-        file_glob='1hi.INSTANT.nhours_x1.*.nc',
-        start_date=datetime(2019, 8, 1, 0),
-        end_date=datetime(2020, 8, 31, 23),
+        # base_dir="/global/cfs/cdirs/e3sm/beydoun/ne1024pg2_ne1024pg2.F2010-SCREAMv1.10022025.CESS2.P0K.n2048.2/run",
+        # date_pattern=r'\.(\d{4}-\d{2}-\d{2})-',
+        # date_format='%Y-%m-%d',
+        # use_year_subdirs=False,
+        # file_glob='1hi.INSTANT.nhours_x1.*.nc',
+        # start_date=datetime(2019, 8, 1, 0),
+        # end_date=datetime(2020, 8, 31, 23),
+        # max_display=300
+        base_dir="/global/cfs/cdirs/wcm_shr/GsMAPv8",
+        date_pattern=r"(\d{8}\.\d{4})",
+        date_format="%Y%m%d.%H%M",
+        use_year_subdirs=True,
+        file_glob="gsmap_mvk.*.nc",
+        start_date=datetime(2020, 1, 1, 0),
+        end_date=datetime(2020, 1, 31, 23),
         max_display=300
     )
     

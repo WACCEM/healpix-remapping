@@ -23,9 +23,19 @@ Examples:
     
     # Apply temporal resampling to specific hours (works with any input times)
     python coarsen_healpix.py data.zarr --target_hours 0 6 12 18 --target_zoom 7
-    
+
     # Use custom compression settings from config file
     python coarsen_healpix.py data.zarr --config my_config.yaml
+
+    # Temporal-only averaging at the SAME zoom level (--target_zoom == input's own
+    # zoom): 30-min -> hourly, no spatial coarsening. Works on inputs whose
+    # filename doesn't match the usual "..._zoom{N}_{start}_{end}.zarr" pattern
+    # (e.g. externally-produced stores) via --base_name, and can subset to a
+    # date range and/or a subset of variables before averaging:
+    python coarsen_healpix.py level_8.zarr --target_zoom 8 --target_hours 0 1 \\
+        --base_name IMERG_V7 --variables calibrated_precipitation \\
+        --rename_variables calibrated_precipitation:precipitation \\
+        --start_date 2001-01-01 --end_date 2024-12-31 --output_dir /path/to/output
 """
 
 import sys
@@ -66,6 +76,34 @@ def load_config(config_path):
     """
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
+
+
+def parse_rename_pair(s):
+    """
+    Parse a single "OLD:NEW" token for the --rename_variables CLI argument.
+
+    Used as the `type=` callable for an argparse `nargs='+'` argument, so
+    each space-separated token is validated individually and a malformed one
+    produces a clean CLI usage error (via ArgumentTypeError) rather than a
+    raw Python traceback.
+
+    Parameters:
+    -----------
+    s : str
+        A single "OLD:NEW" token, e.g. "calibrated_precipitation:precipitation"
+
+    Returns:
+    --------
+    tuple : (old_name, new_name)
+    """
+    if ':' not in s:
+        raise argparse.ArgumentTypeError(
+            f"Invalid --rename_variables entry '{s}' - expected format OLD:NEW")
+    old, new = s.split(':', 1)
+    if not old or not new:
+        raise argparse.ArgumentTypeError(
+            f"Invalid --rename_variables entry '{s}' - both OLD and NEW must be non-empty")
+    return old, new
 
 
 def get_default_compression_config():
@@ -140,7 +178,24 @@ def get_encoding(dataset, compression_config=None):
             encoding['cell'] = {'dtype': 'int32'}
         elif cell_var.dtype.kind == 'f':  # floating point
             encoding['cell'] = {'dtype': 'float32'}
-    
+
+    # Ensure every dask-backed coordinate's on-disk chunk encoding matches its
+    # ACTUAL current chunking, not chunking inherited from the input Zarr
+    # store. Coordinates that pass through a processing step unchanged (e.g.
+    # 'latitude'/'longitude' auxiliary coordinates on externally-produced
+    # inputs that are never resampled/reassigned) keep the source store's
+    # chunk metadata via xarray's automatic `.encoding` - which conflicts
+    # with to_zarr()'s safe_chunks check once the dataset has been rechunked
+    # for output, raising "would overlap multiple dask chunks" even though
+    # nothing is actually wrong with the data. Note: intentionally only sets
+    # 'chunks' here, never 'dtype' - forcing a dtype on 'time' in particular
+    # is known to corrupt the decoded time coordinate.
+    for coord_name in dataset.coords:
+        coord = dataset.coords[coord_name]
+        chunksize = getattr(coord.data, 'chunksize', None)
+        if chunksize:
+            encoding.setdefault(coord_name, {})['chunks'] = chunksize
+
     return encoding
 
 
@@ -325,13 +380,15 @@ def apply_temporal_averaging(ds, file_info, temporal_factor=1, target_hours=None
         return ds, file_info
 
 
-def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_factor=1, 
-                         target_hours=None, time_chunk_size=24, compression_config=None, 
-                         direct_coarsen=False, overwrite=False):
+def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_factor=1,
+                         target_hours=None, time_chunk_size=24, compression_config=None,
+                         direct_coarsen=False, overwrite=False, base_name=None,
+                         start_date=None, end_date=None, variables=None,
+                         rename_variables=None):
     """
     Coarsen HEALPix data from high zoom level to progressively lower levels.
     Optionally performs temporal coarsening (averaging) as well.
-    
+
     Parameters:
     -----------
     input_zarr : str or Path
@@ -339,7 +396,10 @@ def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_fa
     output_dir : str or Path, optional
         Output directory for coarsened files. If None, uses same directory as input.
     target_zoom : int
-        Target zoom level to coarsen down to (default: 0)
+        Target zoom level to coarsen down to (default: 0). May equal the input's
+        own zoom level, in which case no spatial coarsening is applied (spatial
+        coarsen factor is 1, a no-op) - useful for temporal-averaging-only runs
+        (e.g. 30-min -> hourly at the same resolution).
     temporal_factor : int
         Temporal coarsening factor (default: 1, no temporal coarsening)
         e.g., 3 for 1H->3H, 6 for 1H->6H, 24 for 1H->1D
@@ -359,30 +419,116 @@ def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_fa
         Sequential coarsening creates all intermediate levels (start_zoom-1, start_zoom-2, ..., target_zoom).
     overwrite : bool
         Whether to overwrite existing files (default: False)
+    base_name : str, optional
+        Override the output filename's base name. Required if the input
+        filename doesn't match the expected `..._zoom{N}_{start}_{end}.zarr`
+        pattern (e.g. externally-produced stores like DKRZ's `level_8.zarr`),
+        since there's no name to parse in that case. If the filename *does*
+        parse and base_name is not given, the parsed name is used (unchanged
+        prior behavior).
+    start_date, end_date : str, optional
+        If given, subset the input to this time range (anything accepted by
+        `xr.Dataset.sel(time=slice(...))`, e.g. "2001-01-01") before any
+        averaging/coarsening. Default None: process the full input time range
+        (unchanged prior behavior).
+    variables : list of str, optional
+        If given, keep only these data variables (dropping the rest) before
+        any averaging/coarsening. Default None: keep all variables (unchanged
+        prior behavior).
+    rename_variables : dict, optional
+        Mapping of {old_name: new_name} to rename output variables (e.g.
+        {'calibrated_precipitation': 'precipitation'}), applied after
+        `variables` selection and before any averaging/coarsening. Keys not
+        present in the dataset are skipped with a warning, not an error.
+        Default None: no renaming (unchanged prior behavior).
     """
-    
-    # Extract information from input filename
+
     input_path = Path(input_zarr)
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_zarr}")
-    
-    file_info = extract_info_from_filename(input_path.name)
-    start_zoom = file_info['zoom']
-    
-    logger.info(f"Processing: {input_path.name}")
-    logger.info(f"Starting zoom level: {start_zoom}")
-    logger.info(f"Target zoom level: {target_zoom}")
-    
-    if start_zoom <= target_zoom:
-        logger.warning(f"Start zoom ({start_zoom}) must be higher than target zoom ({target_zoom})")
-        return
-    
-    # Load the highest resolution dataset
+
+    # Extract information from input filename where possible. Some inputs
+    # (e.g. externally-produced stores) don't follow the expected naming
+    # convention at all - fall back to reading zoom/dates from the dataset
+    # itself in that case, rather than failing outright.
+    try:
+        file_info = extract_info_from_filename(input_path.name)
+    except ValueError:
+        logger.warning(f"Filename does not match expected pattern: {input_path.name}")
+        logger.warning("Falling back to metadata derived from the dataset itself")
+        file_info = {'base_name': None, 'time_resolution': None, 'zoom': None,
+                     'start_date': None, 'end_date': None}
+
+    if base_name is not None:
+        file_info['base_name'] = base_name
+    elif file_info['base_name'] is None:
+        raise ValueError(
+            f"Cannot determine output base name: filename '{input_path.name}' "
+            f"doesn't match the expected pattern, and no --base_name was given. "
+            f"Please specify --base_name explicitly."
+        )
+
+    # Load the dataset (needed to fall back to metadata-derived zoom/dates,
+    # and for variable/date subsetting, regardless of filename parsing).
     logger.info(f"Loading dataset from: {input_zarr}")
     ds = xr.open_zarr(input_zarr)
     logger.info(f"Dataset loaded: {ds.sizes}")
     logger.info(f"Variables: {list(ds.data_vars)}")
-    
+
+    if file_info['zoom'] is None:
+        if 'crs' in ds and 'healpix_level' in ds['crs'].attrs:
+            file_info['zoom'] = int(ds['crs'].attrs['healpix_level'])
+            logger.info(f"Zoom level not in filename - read from crs attrs: {file_info['zoom']}")
+        else:
+            raise ValueError(
+                f"Cannot determine input zoom level: not in filename, and "
+                f"dataset has no crs.healpix_level attribute."
+            )
+    start_zoom = file_info['zoom']
+
+    logger.info(f"Processing: {input_path.name}")
+    logger.info(f"Starting zoom level: {start_zoom}")
+    logger.info(f"Target zoom level: {target_zoom}")
+
+    if start_zoom < target_zoom:
+        logger.warning(f"Start zoom ({start_zoom}) cannot be lower than target zoom ({target_zoom})")
+        return
+
+    # Keep only the requested variables, if any
+    if variables is not None:
+        logger.info(f"Selecting variables: {variables}")
+        ds = ds[variables]
+
+    # Rename variables, if requested (e.g. calibrated_precipitation -> precipitation).
+    # Only renames keys actually present - a typo or a variable already
+    # dropped by --variables above should warn, not crash the run.
+    if rename_variables:
+        applicable = {old: new for old, new in rename_variables.items() if old in ds.data_vars}
+        missing = set(rename_variables) - set(applicable)
+        if missing:
+            logger.warning(f"rename_variables: variable(s) not found, skipping: {sorted(missing)}")
+        if applicable:
+            logger.info(f"Renaming variables: {applicable}")
+            ds = ds.rename(applicable)
+
+    # Subset to the requested time range, if any
+    if start_date is not None or end_date is not None:
+        logger.info(f"Subsetting time range: {start_date} to {end_date}")
+        ds = ds.sel(time=slice(start_date, end_date))
+        logger.info(f"After subsetting: {ds.sizes['time']} timesteps, "
+                    f"{ds.time.values[0]} to {ds.time.values[-1]}")
+
+    # If dates weren't available from the filename, or the time range was
+    # subset, (re)derive them from the actual data so the output filename
+    # reflects what's actually being written.
+    if file_info['start_date'] is None or file_info['end_date'] is None or \
+            start_date is not None or end_date is not None:
+        t0 = pd.Timestamp(ds.time.values[0]).strftime('%Y%m%d')
+        t1 = pd.Timestamp(ds.time.values[-1]).strftime('%Y%m%d')
+        file_info['start_date'] = t0
+        file_info['end_date'] = t1
+        logger.info(f"Output date range set from data: {t0} to {t1}")
+
     # Apply temporal averaging if requested
     if temporal_factor > 1 or target_hours is not None:
         ds, file_info = apply_temporal_averaging(ds, file_info, temporal_factor, target_hours)
@@ -398,7 +544,13 @@ def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_fa
     logger.info(f"Output directory: {output_dir}")
     
     # Determine coarsening strategy
-    if direct_coarsen:
+    if start_zoom == target_zoom:
+        # Same-zoom, temporal-only pass: there are no intermediate levels to
+        # process regardless of direct/sequential mode - just the input zoom
+        # itself, with spatial coarsen factor 1 (a no-op, handled below).
+        logger.info(f"Target zoom equals start zoom ({start_zoom}) - temporal-only pass, no spatial coarsening")
+        zoom_levels_to_process = [start_zoom]
+    elif direct_coarsen:
         logger.info(f"Using DIRECT coarsening mode (single step from zoom {start_zoom} to zoom {target_zoom})")
         zoom_levels_to_process = [target_zoom]
     else:
@@ -429,7 +581,10 @@ def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_fa
         # Calculate coarsening factor based on current dataset zoom level
         # In direct mode: coarsen from start_zoom to target_zoom
         # In sequential mode: coarsen by factor of 4 (one zoom level at a time)
-        if direct_coarsen:
+        # Same-zoom (temporal-only) mode: factor is always 1 (no spatial change)
+        if start_zoom == target_zoom:
+            coarsen_factor = 1
+        elif direct_coarsen:
             # Calculate factor for direct coarsening from start_zoom to zoom_level
             zoom_diff = start_zoom - zoom_level
             coarsen_factor = 4 ** zoom_diff
@@ -437,12 +592,14 @@ def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_fa
         else:
             # Sequential coarsening: always factor of 4 (one level at a time)
             coarsen_factor = 4
-        
-        logger.info(f"   Coarsening {current_ds.sizes['cell']} cells to {current_ds.sizes['cell']//coarsen_factor} cells")
-        
-        # Use simple coarsening approach
-        # This preserves the coordinate structure automatically
-        coarsened_ds = current_ds.coarsen(cell=coarsen_factor).mean()
+
+        if coarsen_factor > 1:
+            logger.info(f"   Coarsening {current_ds.sizes['cell']} cells to {current_ds.sizes['cell']//coarsen_factor} cells")
+            # Use simple coarsening approach - this preserves the coordinate structure automatically
+            coarsened_ds = current_ds.coarsen(cell=coarsen_factor).mean()
+        else:
+            logger.info(f"   Coarsening factor is 1 - skipping spatial coarsening (temporal-only pass)")
+            coarsened_ds = current_ds
         
         # Ensure cell coordinate remains integer type (critical for HEALPix compatibility)
         n_cells_coarse = coarsened_ds.sizes['cell']
@@ -457,11 +614,21 @@ def coarsen_healpix_data(input_zarr, output_dir=None, target_zoom=0, temporal_fa
             logger.info(f"   Updated HEALPix nside to: {2**zoom_level}")
 
         # Add processing metadata
+        if start_zoom == target_zoom:
+            coarsened_from_zoom = start_zoom
+            coarsening_mode = 'none (temporal-only)'
+        elif direct_coarsen:
+            coarsened_from_zoom = start_zoom
+            coarsening_mode = 'direct'
+        else:
+            coarsened_from_zoom = zoom_level + 1
+            coarsening_mode = 'sequential'
+
         metadata_updates = {
-            'coarsened_from_zoom': start_zoom if direct_coarsen else zoom_level + 1,
+            'coarsened_from_zoom': coarsened_from_zoom,
             'coarsening_method': 'mean',
             'coarsening_factor': coarsen_factor,
-            'coarsening_mode': 'direct' if direct_coarsen else 'sequential',
+            'coarsening_mode': coarsening_mode,
             'processing_timestamp': datetime.now().isoformat(),
             'source_file': str(input_path.name)
         }
@@ -581,11 +748,38 @@ def parse_arguments():
     parser.add_argument('--direct-coarsen', action='store_true',
                         help='Coarsen directly from start_zoom to target_zoom in one step, '
                              'skipping intermediate zoom levels. Faster but only creates the target level. '
-                             'Default behavior is sequential coarsening through all intermediate levels.')
-    
+                             'Default behavior is sequential coarsening through all intermediate levels. '
+                             'Ignored when --target_zoom equals the input\'s own zoom level.')
+
     parser.add_argument('--overwrite', action='store_true',
                         help='Overwrite existing output files')
-    
+
+    parser.add_argument('--base_name',
+                        help='Override the output filename base name. Required if the input '
+                             'filename does not match the expected '
+                             '"..._zoom{N}_{start}_{end}.zarr" pattern (e.g. externally-produced '
+                             'stores). If the filename does parse and this is not given, the '
+                             'parsed name is used.')
+
+    parser.add_argument('--start_date',
+                        help='Subset the input to this start date/time (e.g. "2001-01-01") before '
+                             'any averaging or coarsening. Default: full input time range.')
+
+    parser.add_argument('--end_date',
+                        help='Subset the input to this end date/time (e.g. "2024-12-31") before '
+                             'any averaging or coarsening. Default: full input time range.')
+
+    parser.add_argument('--variables', nargs='+',
+                        help='Keep only these data variables (space-separated), dropping the '
+                             'rest, before any averaging or coarsening. Default: keep all variables.')
+
+    parser.add_argument('--rename_variables', nargs='+', type=parse_rename_pair, metavar='OLD:NEW',
+                        help='Rename output variables, space-separated OLD:NEW pairs, e.g. '
+                             '--rename_variables calibrated_precipitation:precipitation. '
+                             'Applied after --variables selection, before any averaging or '
+                             'coarsening. A name not found in the dataset is skipped with a '
+                             'warning, not an error. Default: no renaming.')
+
     return parser.parse_args()
 
 
@@ -650,7 +844,16 @@ def main():
         logger.info(f"Output directory: {args.output_dir}")
     else:
         logger.info(f"Output directory: same as input ({input_path.parent})")
-    
+    if args.base_name:
+        logger.info(f"Output base name override: {args.base_name}")
+    if args.start_date or args.end_date:
+        logger.info(f"Time range subset: {args.start_date} to {args.end_date}")
+    if args.variables:
+        logger.info(f"Variable selection: {args.variables}")
+    rename_variables = dict(args.rename_variables) if args.rename_variables else None
+    if rename_variables:
+        logger.info(f"Variable renaming: {rename_variables}")
+
     try:
         # Run the coarsening process
         coarsen_healpix_data(
@@ -662,7 +865,12 @@ def main():
             time_chunk_size=args.time_chunk_size,
             compression_config=compression_config,
             direct_coarsen=args.direct_coarsen,
-            overwrite=args.overwrite
+            overwrite=args.overwrite,
+            base_name=args.base_name,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            variables=args.variables,
+            rename_variables=rename_variables
         )
         
         logger.info("All processing completed successfully!")

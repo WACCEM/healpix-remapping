@@ -552,8 +552,9 @@ def remap_delaunay(ds: xr.Dataset, order: int, weights_file=None, config=None) -
         dims=[],
         attrs={
             'grid_mapping_name': 'healpix',
+            'healpix_level': order,
             'healpix_nside': nside,
-            'healpix_order': 'nest'
+            'healpix_order': 'nested',
         }
     )
     ds_remap = ds_remap.assign_coords(crs=crs_var)
