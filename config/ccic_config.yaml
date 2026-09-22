@@ -1,0 +1,112 @@
+# ============================================================
+# CCIC → HEALPix configuration
+# ============================================================
+
+# ------------------------------------------------------------
+# Output paths
+# ------------------------------------------------------------
+
+input_base_dir: null
+
+output_base_dir: "/home/users/kukulies/projects/hackathon/obs_processing/ccic"
+output_basename: "CCIC"
+
+# Optional weights directory
+weights_dir: "/home/users/kukulies/projects/hackathon/obs_processing/weights"
+
+# ------------------------------------------------------------
+# Processing parameters
+# ------------------------------------------------------------
+
+default_zoom: 9
+
+# 48 half-hourly files per chunk
+time_chunk_size: 48
+
+# optional averaging
+time_average: null
+
+# source cadence
+original_time_suffix: "1H"
+
+# convert CFTime → datetime64
+convert_time: true
+
+# concat dimension
+concat_dim: "time"
+
+# ------------------------------------------------------------
+# Variable mapping
+# ------------------------------------------------------------
+
+remap_variables:
+  tiwp: iwp
+
+# ------------------------------------------------------------
+# Grid specification
+# ------------------------------------------------------------
+
+grid_type: "latlon_1d"
+
+# IMPORTANT:
+# x = longitude
+# y = latitude
+x_dimname: "longitude"
+y_dimname: "latitude"
+
+# coordinate variable names
+x_coordname: "longitude"
+y_coordname: "latitude"
+
+# ------------------------------------------------------------
+# Spatial chunking
+# ------------------------------------------------------------
+
+# CCIC dimensions are likely:
+# (time, latitude, longitude)
+
+spatial_dimensions:
+  longitude: -1
+  latitude: -1
+
+# ------------------------------------------------------------
+# Variable filtering
+# ------------------------------------------------------------
+
+skip_variables:
+  - "*_bnds"
+  - "*_bounds"
+  - "time_bnds"
+  - "lat_bnds"
+  - "lon_bnds"
+
+# ------------------------------------------------------------
+# Required dimensions
+# ------------------------------------------------------------
+
+required_dimensions:
+  - ["time", "latitude", "longitude"]
+  - ["time", "longitude", "latitude"]
+
+# ------------------------------------------------------------
+# Compression
+# ------------------------------------------------------------
+
+compression:
+  compressor: "zstd"
+  compressor_level: 3
+  dtype: "float32"
+
+# ------------------------------------------------------------
+# Dask configuration
+# ------------------------------------------------------------
+
+dask:
+  n_workers: 6
+  threads_per_worker: 8
+
+# ------------------------------------------------------------
+# Recompute interpolation weights
+# ------------------------------------------------------------
+
+force_recompute: false
