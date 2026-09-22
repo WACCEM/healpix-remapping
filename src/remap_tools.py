@@ -161,12 +161,13 @@ def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='
     
     # Check if this is a global or regional grid
     lon_range = np.max(source_lon) - np.min(source_lon)
-    is_global = lon_range >= 359  # Global grid spans ~360 degrees
+    is_global = lon_range >= 360  # Global grid spans ~360 degrees
     
     if is_global:
         # Handle longitude periodicity for global grids
         logger.info("Global grid detected - handling longitude periodicity")
-        lon_extended = np.hstack([source_lon - 360, source_lon, source_lon + 360])
+        lon_max = 360
+        lon_extended = np.hstack([source_lon - lon_max, source_lon, source_lon + lon_max])
         lat_extended = np.tile(source_lat, 3)
         
         # Compute weights using extended grid
@@ -175,6 +176,7 @@ def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='
             xi=(hp_lon, hp_lat)
         )
 
+        logger.info(f" succesfully created weights")
         # Remap the source indices back to their valid range
         original_size = len(source_lon)
         weights = weights.assign(src_idx=weights.src_idx % original_size)
@@ -186,6 +188,8 @@ def gen_weights(ds, order, weights_file=None, force_recompute=False, grid_type='
             points=(source_lon, source_lat), 
             xi=(hp_lon, hp_lat)
         )
+        logger.info(f" succesfully created weights")
+        
     
     # Add metadata
     weights.attrs.update({

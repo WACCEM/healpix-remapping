@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-r"""
+"""
 Efficient script to remap gridded datasets to HEALPix and save as Zarr.
 Optimized for NERSC Perlmutter with Dask lazy evaluation and chunking.
 
@@ -178,339 +178,508 @@ logger = logging.getLogger(__name__)
 warnings.filterwarnings('ignore', category=UserWarning)
 
 
-def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
-                           weights_file=None, overwrite=False, time_average=None,
-                           preprocessing_func=None, preprocessing_kwargs=None,
-                           config=None):
-    r"""
-    Main function to process gridded lat/lon datasets to HEALPix Zarr format.
-    
-    Generalized pipeline that works with any gridded lat/lon NetCDF dataset,
-    with optional dataset-specific preprocessing (e.g., time subsetting for IMERG).
-    
-    Spatial dimensions are auto-detected from the first data file, but can be
-    overridden via the spatial_chunks parameter for explicit control.
-    
-    Parameters:
-    -----------
-    start_date : datetime
-        Starting date (inclusive)
-    end_date : datetime
-        Ending date (inclusive)  
-    zoom : int
-        HEALPix zoom level (order)
-    output_zarr : str
-        Output Zarr path
-    weights_file : str, optional
-        Weights file path for caching remapping weights
-    overwrite : bool, default=False
-        If True, overwrite existing Zarr files; if False, error on existing files
-    time_average : str, optional
-        Temporal averaging frequency (e.g., "1h", "3h", "6h", "1d")
-        If None, no averaging is applied
-    preprocessing_func : callable or list of callables, optional
-        Dataset-specific preprocessing function(s) to apply after reading files.
-        Can be a single function or a list of functions to apply in sequence.
-    preprocessing_kwargs : dict or list of dicts, optional
-        Keyword arguments to pass to preprocessing function(s)
-    config : dict, optional
-        Configuration dictionary containing processing parameters. If provided,
-        individual parameters will be extracted from this dictionary. Required keys:
-        - input_base_dir: Base directory containing data files
-        - time_chunk_size: Time chunk size for processing (default: 48)
-        
-        Optional keys:
-        - spatial_dimensions: Spatial chunking specification (default: auto-detect)
-        - concat_dim: Time dimension name (default: 'time')
-        - force_recompute: Force recompute weights (default: False)
-        - grid_type: Grid type ('auto', 'latlon_1d', 'latlon_2d', 'unstructured')
-        - convert_time: Convert cftime to datetime64 (default: False)
-        - dask: Dask configuration dict (n_workers, threads_per_worker, memory_limit)
-        - date_pattern: Regex pattern for date extraction (default: r'\.(\d{8})-')
-        - date_format: strptime format string (default: '%Y%m%d')
-        - use_year_subdirs: Use yearly subdirectories (default: True)
-        - file_glob: File glob pattern (default: '*.nc*')
-        - skip_variables: List of variable patterns to skip (supports wildcards)
-        - required_dimensions: List of required dimension combinations
-        - remap_variables: Dict mapping input variable names to output names
-        - input_files: Pre-searched files (dict or list), bypasses get_input_files()
-          Dict format for multi-variable: {'var1': [files], 'var2': [files]}
-          List format for single/all variables: [file1, file2, ...]
-        - combine_vars: Merge variables from separate files (default: False)
-          Required for ERA5 multi-variable workflow
-    
-    Returns:
-    --------
-    None
-        Writes output to zarr file specified by output_zarr
-    
-    Examples:
-    ---------
-    # Using config dictionary (recommended)
-    config = {
-        'input_base_dir': '/data/SCREAM',
-        'time_chunk_size': 24,
-        'grid_type': 'unstructured',
-        'spatial_dimensions': {'ncol': -1},
-        'skip_variables': ['*_bounds', 'time_bnds'],
-        'required_dimensions': [['time', 'ncol']],
-        'remap_variables': {'precip_total_surf_mass_flux': 'pr'}
-    }
-    process_to_healpix_zarr(
-        start_date=datetime(2020, 1, 1),
-        end_date=datetime(2020, 12, 31),
-        zoom=9,
-        output_zarr="/path/to/output.zarr",
-        weights_file="/path/to/weights.nc",
-        config=config
-    )
-    
-    # Example: ERA5 data with multi-variable files
-    from src.utilities import get_era5_input_files
-    
-    file_dict = get_era5_input_files(
-        start_date=datetime(2020, 1, 1),
-        end_date=datetime(2020, 1, 7),
-        variables=['T', 'Q', 'U', 'V'],
-        config=era5_config
-    )
-    
-    config = {
-        'input_files': file_dict,  # Pre-searched files by variable
-        'combine_vars': True,       # Merge variables into one dataset
-        'remap_variables': {'T': 'ta', 'Q': 'hus'},
-        'time_chunk_size': 24,
-        'grid_type': 'latlon_1d'
-    }
-    
-    process_to_healpix_zarr(
-        start_date=datetime(2020, 1, 1),
-        end_date=datetime(2020, 1, 7),
-        zoom=8,
-        output_zarr="/path/to/era5_output.zarr",
-        weights_file="/path/to/era5_weights.nc",
-        config=config
-    )
+def process_to_healpix_zarr(
+    start_date,
+    end_date,
+    zoom,
+    output_zarr,
+    weights_file=None,
+    overwrite=False,
+    time_average=None,
+    preprocessing_func=None,
+    preprocessing_kwargs=None,
+    config=None,
+    dataset=None,
+):
     """
-    
-    # Extract parameters from config dictionary with defaults
+    Generalized pipeline for remapping datasets to HEALPix Zarr.
+    Supports both:
+        1. file-based workflows
+        2. preloaded xarray datasets (e.g. AWS Zarr / CCIC)
+    """
+
+    import time
+
     if config is None:
         raise ValueError("config dictionary is required")
-    
-    # Required parameters
-    input_base_dir = config['input_base_dir']
-    
-    # Optional parameters with defaults
-    time_chunk_size = config.get('time_chunk_size', 48)
-    spatial_chunks = config.get('spatial_dimensions', None)
-    concat_dim = config.get('concat_dim', 'time')
-    force_recompute = config.get('force_recompute', False)
-    grid_type = config.get('grid_type', 'auto')
-    convert_time = config.get('convert_time', False)
-    dask_config = config.get('dask', None)
-    date_pattern = config.get('date_pattern', r'\.(\d{8})-')
-    date_format = config.get('date_format', '%Y%m%d')
-    use_year_subdirs = config.get('use_year_subdirs', True)
-    file_glob = config.get('file_glob', '*.nc*')
-    skip_variables = config.get('skip_variables', None)
-    required_dimensions = config.get('required_dimensions', None)
-    remap_variables = config.get('remap_variables', None)
-    input_files = config.get('input_files', None)  # Pre-searched files (ERA5)
-    combine_vars = config.get('combine_vars', False)  # Merge multi-variable files
-    
-    logger.info("="*70)
+
+    # =========================================================
+    # CONFIG
+    # =========================================================
+
+    input_base_dir = config.get("input_base_dir", None)
+
+    time_chunk_size = config.get("time_chunk_size", 48)
+
+    spatial_chunks = config.get("spatial_dimensions", None)
+
+    concat_dim = config.get("concat_dim", "time")
+
+    force_recompute = config.get("force_recompute", False)
+
+    grid_type = config.get("grid_type", "auto")
+
+    convert_time = config.get("convert_time", False)
+
+    dask_config = config.get("dask", None)
+
+    date_pattern = config.get(
+        "date_pattern",
+        r"\.(\d{8})-"
+    )
+
+    date_format = config.get(
+        "date_format",
+        "%Y%m%d"
+    )
+
+    use_year_subdirs = config.get(
+        "use_year_subdirs",
+        True
+    )
+
+    file_glob = config.get(
+        "file_glob",
+        "*.nc*"
+    )
+
+    skip_variables = config.get(
+        "skip_variables",
+        None
+    )
+
+    required_dimensions = config.get(
+        "required_dimensions",
+        None
+    )
+
+    remap_variables = config.get(
+        "remap_variables",
+        None
+    )
+
+    input_files = config.get(
+        "input_files",
+        None
+    )
+
+    combine_vars = config.get(
+        "combine_vars",
+        False
+    )
+
+    # =========================================================
+    # LOGGING
+    # =========================================================
+
+    logger.info("=" * 70)
     logger.info("Configuration Summary")
-    logger.info("="*70)
-    logger.info(f"Input directory: {input_base_dir}")
+    logger.info("=" * 70)
+
+    if dataset is not None:
+        logger.info("Input source: preloaded xarray dataset")
+    else:
+        logger.info(f"Input directory: {input_base_dir}")
+
     logger.info(f"Time chunk size: {time_chunk_size}")
     logger.info(f"Grid type: {grid_type}")
+
     if spatial_chunks:
         logger.info(f"Spatial chunks: {spatial_chunks}")
+
     if skip_variables:
         logger.info(f"Skip variables: {skip_variables}")
+
     if required_dimensions:
         logger.info(f"Required dimensions: {required_dimensions}")
+
     if remap_variables:
         logger.info(f"Remap variables: {remap_variables}")
-    logger.info("="*70)
-    
-    # Get file list for date range FIRST (needed for auto-detection)
-    # Use pre-searched files if provided (e.g., from get_era5_input_files)
-    if input_files is not None:
-        files = input_files
-        if isinstance(files, dict):
-            total_files = sum(len(f) for f in files.values())
-            logger.info(f"Using pre-searched files: {total_files} files across {len(files)} variables")
-        else:
-            logger.info(f"Using pre-searched files: {len(files)} files")
-    else:
-        files = utilities.get_input_files(
-            start_date, end_date, input_base_dir,
-            date_pattern=date_pattern,
-            date_format=date_format,
-            use_year_subdirs=use_year_subdirs,
-            file_glob=file_glob
-        )
-        if not files:
-            raise ValueError("No files found for the specified period")
 
-    # Hybrid spatial dimension detection:
-    # Priority: explicit config > auto-detection > default fallback
-    if spatial_chunks is None:
-        logger.info("🔍 Spatial dimensions not specified - auto-detecting from first file...")
-        spatial_chunks = utilities.detect_spatial_dimensions(files, time_dim=concat_dim)
+    logger.info("=" * 70)
+
+    # =========================================================
+    # LOAD DATASET
+    # =========================================================
+
+    files = None
+
+    if dataset is not None:
+
+        logger.info("📦 Using preloaded dataset")
+
+        ds = dataset
+
     else:
-        logger.info(f"✅ Using explicitly provided spatial dimensions: {spatial_chunks}")
-    
-    # Setup Dask client with configuration from config file or defaults
-    if dask_config:
-        client = utilities.setup_dask_client(
-            n_workers=dask_config.get('n_workers'),
-            threads_per_worker=dask_config.get('threads_per_worker'),
-            memory_limit=dask_config.get('memory_limit'),
-            advanced_config=dask_config.get('worker_options', {})
-        )
-    else:
-        client = utilities.setup_dask_client()
-    
-    # Log cluster information for debugging
-    logger.info(f"Dask cluster info: {len(client.scheduler_info()['workers'])} workers")
-    logger.info(f"Total cluster memory: {sum(w['memory_limit'] for w in client.scheduler_info()['workers'].values()) / 1024**3:.1f} GB")
-    
-    # Start overall processing timer
-    overall_start_time = time.time()
-    
-    try:
-        # Read files with validation and retry logic
-        logger.info("🔄 Step 1: Reading files and concatenating along time dimension...")
-        step_start = time.time()
+
+        logger.info("📁 Using file-based input pipeline")
+
+        # ---------------------------------------------
+        # use pre-searched files if provided
+        # ---------------------------------------------
+
+        if input_files is not None:
+
+            files = input_files
+
+            if isinstance(files, dict):
+
+                total_files = sum(
+                    len(v) for v in files.values()
+                )
+
+                logger.info(
+                    f"Using pre-searched files: "
+                    f"{total_files} files across "
+                    f"{len(files)} variables"
+                )
+
+            else:
+
+                logger.info(
+                    f"Using pre-searched files: "
+                    f"{len(files)} files"
+                )
+
+        else:
+
+            files = utilities.get_input_files(
+                start_date,
+                end_date,
+                input_base_dir,
+                date_pattern=date_pattern,
+                date_format=date_format,
+                use_year_subdirs=use_year_subdirs,
+                file_glob=file_glob,
+            )
+
+            if not files:
+                raise ValueError(
+                    "No files found for specified period"
+                )
+
         ds = utilities.read_concat_files(
-            files, 
+            files,
             time_chunk_size=time_chunk_size,
             spatial_dims=spatial_chunks,
             concat_dim=concat_dim,
-            combine_vars=combine_vars  # Merge multi-variable files (ERA5)
+            combine_vars=combine_vars,
         )
-        step_time = time.time() - step_start
-        logger.info(f"✅ Step 1 completed in {step_time/60:.1f} minutes")
 
-        # Apply dataset-specific preprocessing if requested
+    # =========================================================
+    # SPATIAL DIMENSION DETECTION
+    # =========================================================
+
+    if spatial_chunks is None:
+
+        logger.info(
+            "🔍 Spatial dimensions not specified"
+        )
+
+        if dataset is not None:
+
+            logger.info(
+                "Auto-detecting from dataset..."
+            )
+
+            spatial_chunks = {
+                dim: -1
+                for dim in ds.dims
+                if dim != concat_dim
+            }
+
+        else:
+
+            logger.info(
+                "Auto-detecting from files..."
+            )
+
+            spatial_chunks = (
+                utilities.detect_spatial_dimensions(
+                    files,
+                    time_dim=concat_dim,
+                )
+            )
+
+    logger.info(
+        f"Using spatial chunks: {spatial_chunks}"
+    )
+
+    # =========================================================
+    # DASK
+    # =========================================================
+
+    if dask_config:
+
+        client = utilities.setup_dask_client(
+            n_workers=dask_config.get(
+                "n_workers"
+            ),
+            threads_per_worker=dask_config.get(
+                "threads_per_worker"
+            ),
+            memory_limit=dask_config.get(
+                "memory_limit"
+            ),
+            advanced_config=dask_config.get(
+                "worker_options",
+                {},
+            ),
+        )
+
+    else:
+
+        client = utilities.setup_dask_client()
+
+    logger.info(
+        f"Dask workers: "
+        f"{len(client.scheduler_info()['workers'])}"
+    )
+
+    # =========================================================
+    # PROCESSING TIMER
+    # =========================================================
+
+    overall_start_time = time.time()
+
+    try:
+
+        # =====================================================
+        # PREPROCESSING
+        # =====================================================
+
         if preprocessing_func is not None:
-            logger.info("🔄 Step 1b: Applying dataset-specific preprocessing...")
+
+            logger.info(
+                "🔄 Applying preprocessing..."
+            )
+
             step_start = time.time()
-            
-            # Handle single function or list of functions
-            funcs = preprocessing_func if isinstance(preprocessing_func, list) else [preprocessing_func]
-            kwargs_list = preprocessing_kwargs if isinstance(preprocessing_kwargs, list) else [preprocessing_kwargs or {}]
-            
-            # Ensure kwargs_list matches funcs length
+
+            funcs = (
+                preprocessing_func
+                if isinstance(preprocessing_func, list)
+                else [preprocessing_func]
+            )
+
+            kwargs_list = (
+                preprocessing_kwargs
+                if isinstance(preprocessing_kwargs, list)
+                else [preprocessing_kwargs or {}]
+            )
+
             if len(kwargs_list) == 1 and len(funcs) > 1:
-                kwargs_list = kwargs_list * len(funcs)
-            elif len(kwargs_list) != len(funcs):
-                raise ValueError(f"preprocessing_kwargs length ({len(kwargs_list)}) must match preprocessing_func length ({len(funcs)})")
-            
-            # Apply preprocessing functions in sequence
-            for i, (func, kwargs) in enumerate(zip(funcs, kwargs_list)):
-                func_name = getattr(func, '__name__', str(func))
-                logger.info(f"   Applying preprocessing step {i+1}/{len(funcs)}: {func_name}")
+                kwargs_list *= len(funcs)
+
+            for i, (func, kwargs) in enumerate(
+                zip(funcs, kwargs_list)
+            ):
+
+                func_name = getattr(
+                    func,
+                    "__name__",
+                    str(func),
+                )
+
+                logger.info(
+                    f"Applying preprocessing "
+                    f"{i+1}/{len(funcs)}: "
+                    f"{func_name}"
+                )
+
                 ds = func(ds, **kwargs)
-            
-            step_time = time.time() - step_start
-            logger.info(f"✅ Step 1b completed in {step_time:.1f} seconds ({len(funcs)} function(s) applied)")
-        
-        # Apply temporal averaging if requested
-        logger.info("🔄 Step 2: Applying temporal averaging...")
-        step_start = time.time()
-        ds = utilities.temporal_average(ds, time_average, convert_time)
-        step_time = time.time() - step_start
-        logger.info(f"✅ Step 2 completed in {step_time:.1f} seconds")
-        
-        # Remap to HEALPix using remap_tools (following ICON pattern)
-        logger.info("🔄 Step 3: Remapping to HEALPix...")
-        step_start = time.time()
-        logger.info(f"Remapping to HEALPix zoom level {zoom}")
-        
-        # Pass config dictionary to remap_delaunay for flexible parameter handling
-        ds_remap = remap_tools.remap_delaunay(ds, zoom, weights_file, config=config)
-        step_time = time.time() - step_start
-        logger.info(f"✅ Step 3 completed in {step_time:.1f} seconds")
 
-        logger.info(f"Remapped dataset: {ds_remap.sizes}")
-        logger.info(f"Variables: {list(ds_remap.data_vars)}")
-        
-        # Apply variable subsetting and renaming if requested
-        if remap_variables:
-            logger.info("🔄 Step 3b: Subsetting and renaming variables...")
-            step_start = time.time()
-            
-            # Subset dataset to include variables in remap_variables + passthrough variables
-            # This automatically includes coordinate variables (time, cell, lev, etc.)
-            vars_to_keep = [var for var in remap_variables.keys() if var in ds_remap.data_vars]
-            
-            # Also keep passthrough variables (non-remapped variables like vertical coordinates)
-            passthrough_variables = config.get('passthrough_variables', [])
-            if passthrough_variables:
-                passthrough_to_keep = [var for var in passthrough_variables if var in ds_remap.data_vars]
-                vars_to_keep.extend(passthrough_to_keep)
-                if passthrough_to_keep:
-                    logger.info(f"   Including {len(passthrough_to_keep)} passthrough variable(s): {passthrough_to_keep}")
-            
-            if not vars_to_keep:
-                logger.warning(f"   None of the variables in remap_variables found in dataset")
-                logger.warning(f"   Requested: {list(remap_variables.keys())}")
-                logger.warning(f"   Available: {list(ds_remap.data_vars)}")
-            else:
-                logger.info(f"   Subsetting to {len(vars_to_keep)} variable(s): {vars_to_keep}")
-                ds_remap = ds_remap[vars_to_keep]
-                
-                # Rename the subsetted variables (but not passthrough variables)
-                renamed_vars = []
-                for old_name, new_name in remap_variables.items():
-                    if old_name in ds_remap.data_vars:
-                        ds_remap = ds_remap.rename({old_name: new_name})
-                        renamed_vars.append(f"{old_name} → {new_name}")
-                        logger.info(f"   Renamed: {old_name} → {new_name}")
-                
-                step_time = time.time() - step_start
-                logger.info(f"✅ Step 3b completed in {step_time:.1f} seconds ({len(renamed_vars)} variable(s) processed)")
-                logger.info(f"Updated variables: {list(ds_remap.data_vars)}")
+            logger.info(
+                f"✅ preprocessing completed "
+                f"in {(time.time()-step_start):.1f}s"
+            )
 
-        # Write to Zarr with optimal chunking and monitoring
-        logger.info("🔄 Step 4: Writing to Zarr...")
-        step_start = time.time()
-        ds_remap_chunked, zarr_time = zarr_tools.write_zarr_with_monitoring(
-            ds_remap, output_zarr, time_chunk_size, zoom, overwrite
+        # =====================================================
+        # TEMPORAL AVERAGING
+        # =====================================================
+
+        logger.info(
+            "🔄 Applying temporal averaging..."
         )
-        logger.info(f"✅ Step 4 completed in {zarr_time/60:.1f} minutes")
-        
-        # Overall timing summary
+
+        step_start = time.time()
+
+        ds = utilities.temporal_average(
+            ds,
+            time_average,
+            convert_time,
+        )
+
+        logger.info(
+            f"✅ temporal averaging completed "
+            f"in {(time.time()-step_start):.1f}s"
+        )
+
+        # =====================================================
+        # REMAP
+        # =====================================================
+
+        logger.info(
+            f"🔄 Remapping to HEALPix zoom {zoom}"
+        )
+
+        step_start = time.time()
+
+        ds_remap = remap_tools.remap_delaunay(
+            ds,
+            zoom,
+            weights_file,
+            config=config,
+        )
+
+        logger.info(
+            f"✅ remapping completed "
+            f"in {(time.time()-step_start):.1f}s"
+        )
+
+        logger.info(
+            f"Remapped dataset dims: "
+            f"{ds_remap.sizes}"
+        )
+
+        logger.info(
+            f"Variables: "
+            f"{list(ds_remap.data_vars)}"
+        )
+
+        # =====================================================
+        # VARIABLE RENAME
+        # =====================================================
+
+        if remap_variables:
+
+            logger.info(
+                "🔄 Applying variable renaming..."
+            )
+
+            vars_to_keep = [
+                var
+                for var in remap_variables.keys()
+                if var in ds_remap.data_vars
+            ]
+
+            passthrough_variables = config.get(
+                "passthrough_variables",
+                [],
+            )
+
+            vars_to_keep.extend(
+                [
+                    var
+                    for var in passthrough_variables
+                    if var in ds_remap.data_vars
+                ]
+            )
+
+            ds_remap = ds_remap[vars_to_keep]
+
+            for old_name, new_name in (
+                remap_variables.items()
+            ):
+
+                if old_name in ds_remap:
+
+                    ds_remap = ds_remap.rename(
+                        {old_name: new_name}
+                    )
+
+                    logger.info(
+                        f"Renamed "
+                        f"{old_name} -> {new_name}"
+                    )
+
+        # =====================================================
+        # WRITE ZARR
+        # =====================================================
+
+        logger.info("🔄 Writing Zarr...")
+
+        step_start = time.time()
+
+        ds_remap_chunked, zarr_time = (
+            zarr_tools.write_zarr_with_monitoring(
+                ds_remap,
+                output_zarr,
+                time_chunk_size,
+                zoom,
+                overwrite,
+            )
+        )
+
+        logger.info(
+            f"✅ Zarr write completed "
+            f"in {zarr_time/60:.1f} min"
+        )
+
+        # =====================================================
+        # SUMMARY
+        # =====================================================
+
         total_time = time.time() - overall_start_time
+
         logger.info("=" * 60)
-        logger.info("📈 PROCESSING SUMMARY:")
-        logger.info(f"   Total processing time: {total_time/60:.1f} minutes ({total_time/3600:.1f} hours)")
-        logger.info(f"   Input files: {len(files)} files")
-        logger.info(f"   Processing rate: {len(files)/(total_time/60):.0f} files/minute")
-        logger.info(f"   Output size: {ds_remap_chunked.nbytes / 1024**3:.1f} GB")
-        logger.info(f"   Write throughput: {(ds_remap_chunked.nbytes / 1024**3)/(zarr_time/60):.1f} GB/minute")
+        logger.info("📈 PROCESSING SUMMARY")
         logger.info("=" * 60)
-        
-        logger.info(f"Successfully created Zarr dataset: {output_zarr}")
-        logger.info(f"Final dataset shape: {ds_remap_chunked.sizes}")
-        
+
+        if dataset is not None:
+
+            logger.info(
+                "Input source: "
+                "preloaded xarray dataset"
+            )
+
+        else:
+
+            logger.info(
+                f"Input files: {len(files)}"
+            )
+
+            logger.info(
+                f"Processing rate: "
+                f"{len(files)/(total_time/60):.1f} "
+                f"files/minute"
+            )
+
+        logger.info(
+            f"Total runtime: "
+            f"{total_time/60:.1f} minutes"
+        )
+
+        logger.info(
+            f"Output size: "
+            f"{ds_remap_chunked.nbytes / 1024**3:.2f} GB"
+        )
+
+        logger.info("=" * 60)
+
+        logger.info(
+            f"Successfully created:\n{output_zarr}"
+        )
+
         return ds_remap_chunked
-        
+
     finally:
-        # Graceful shutdown of Dask client
+
+        logger.info(
+            "Shutting down Dask cluster..."
+        )
+
         try:
-            logger.info("Shutting down Dask cluster...")
-            client.shutdown()  # Gracefully shutdown workers first
-        except Exception as e:
-            logger.debug(f"Error during client shutdown: {e}")
-        finally:
-            try:
-                client.close()  # Then close the client
-            except Exception as e:
-                logger.debug(f"Error during client close: {e}")
+            client.shutdown()
+        except Exception:
+            pass
+
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
 
 
 # Backwards compatibility: maintain old function name as alias
