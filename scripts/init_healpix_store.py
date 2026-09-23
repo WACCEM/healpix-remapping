@@ -20,7 +20,7 @@ will write - no hand-maintained schema to keep in sync.
 Usage:
     python init_healpix_store.py -c ../config/gsmap_config.yaml \\
         --start-year 2010 --end-year 2024 -z 9 \\
-        -o /pscratch/sd/w/wcmca1/GsMAP/healpix/GsMAPv8_1H_zoom9_20100101_20241231.zarr
+        -o /pscratch/sd/w/wcmca1/GSMaP/healpix/GSMaPv8_1H_zoom9_20100101_20241231.zarr
 
 Then submit the processing array (see submit_gsmap_array.sh), and finally
 check completeness / consolidate metadata once all tasks finish:
@@ -208,7 +208,7 @@ def build_sample_remap(config, zoom, files, weights_file):
             f"init_healpix_store.py requires the source data to decode to numpy "
             f"datetime64 time values (got dtype={ds_remap['time'].dtype}), since the "
             f"full multi-year time axis is built with pandas.date_range(). This holds "
-            f"for GsMAP with fix_time_units=true / use_cftime=false in config. "
+            f"for GSMaP with fix_time_units=true / use_cftime=false in config. "
             f"cftime-based datasets are not currently supported by this script."
         )
 
@@ -297,7 +297,7 @@ def parse_args():
         epilog="""
 Examples:
   %(prog)s -c ../config/gsmap_config.yaml --start-year 2010 --end-year 2024 -z 9 \\
-      -o /pscratch/sd/w/wcmca1/GsMAP/healpix/GsMAPv8_1H_zoom9_20100101_20241231.zarr
+      -o /pscratch/sd/w/wcmca1/GSMaP/healpix/GSMaPv8_1H_zoom9_20100101_20241231.zarr
         """
     )
     parser.add_argument('-c', '--config', type=str, required=True,

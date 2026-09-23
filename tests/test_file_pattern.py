@@ -265,7 +265,7 @@ if __name__ == "__main__":
         # start_date=datetime(2019, 8, 1, 0),
         # end_date=datetime(2020, 8, 31, 23),
         # max_display=300
-        base_dir="/global/cfs/cdirs/wcm_shr/GsMAPv8",
+        base_dir="/global/cfs/cdirs/wcm_shr/GSMaPv8",
         date_pattern=r"(\d{8}\.\d{4})",
         date_format="%Y%m%d.%H%M",
         use_year_subdirs=True,

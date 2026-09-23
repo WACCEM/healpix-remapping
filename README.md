@@ -23,9 +23,9 @@ A high-performance, scalable pipeline for remapping **any gridded NetCDF dataset
 
 **ERA5 Multi-Variable Support** - Custom processing scripts for ERA5 2D (surface) and 3D (pressure level) variables with flexible time/level subsetting and parallel merge utility.
 
-**Non-Standard Time Attribute Handling** - New `fix_time_units` / `rename_variables` / `use_cftime` config options repair non-CF-compliant time coordinates (e.g. GsMAP's per-file `"1hour since 2020-01-02 08:00:0.0"` units, with the true reference date living only in that string) before decoding, and rename non-standard dimension/coordinate names to the pipeline's expected conventions. Fully opt-in - default behavior is unchanged. See `config/gsmap_config.yaml` for a working example.
+**Non-Standard Time Attribute Handling** - New `fix_time_units` / `rename_variables` / `use_cftime` config options repair non-CF-compliant time coordinates (e.g. GSMaP's per-file `"1hour since 2020-01-02 08:00:0.0"` units, with the true reference date living only in that string) before decoding, and rename non-standard dimension/coordinate names to the pipeline's expected conventions. Fully opt-in - default behavior is unchanged. See `config/gsmap_config.yaml` for a working example.
 
-**Parallel Multi-Year Processing** - New `init_healpix_store.py` / `submit_gsmap_array.sh` / `check_healpix_store.py` workflow processes many years as independent parallel SLURM array tasks, each writing directly into its own chunk-aligned time region of ONE shared Zarr store (`--region-store`) - no separate merge step required. Validated processing 15 years (2010-2024) of GsMAP hourly data in 1h36m wall-clock, 607 GB output, 0 missing chunks.
+**Parallel Multi-Year Processing** - New `init_healpix_store.py` / `submit_gsmap_array.sh` / `check_healpix_store.py` workflow processes many years as independent parallel SLURM array tasks, each writing directly into its own chunk-aligned time region of ONE shared Zarr store (`--region-store`) - no separate merge step required. Validated processing 15 years (2010-2024) of GSMaP hourly data in 1h36m wall-clock, 607 GB output, 0 missing chunks.
 
 ## Features
 
@@ -206,14 +206,14 @@ dask:
 
 **g) Non-Standard Time Attribute Handling (OPTIONAL):**
 
-Some datasets store time coordinates with non-CF-compliant `units` attributes that xarray cannot decode directly. For example, GsMAP v8 stores:
+Some datasets store time coordinates with non-CF-compliant `units` attributes that xarray cannot decode directly. For example, GSMaP v8 stores:
 
 ```
 int Time(Time) ;
     Time:units = "1hour since 2020-01-02 08:00:0.0" ;
 ```
 
-CF requires a bare unit name (`"hours"`, not `"1hour"`) and zero-padded seconds - `xr.open_mfdataset()` fails with `unable to decode time units ... Try opening your dataset with decode_times=False`. GsMAP additionally stores only a single time step per file (`Time = [0]`), with the true reference date living entirely in that per-file `units` string - so the fix must happen **per file, before concatenation**, not on the combined dataset afterward (fixing it after combining would silently collapse every file's timestamp to the first file's date).
+CF requires a bare unit name (`"hours"`, not `"1hour"`) and zero-padded seconds - `xr.open_mfdataset()` fails with `unable to decode time units ... Try opening your dataset with decode_times=False`. GSMaP additionally stores only a single time step per file (`Time = [0]`), with the true reference date living entirely in that per-file `units` string - so the fix must happen **per file, before concatenation**, not on the combined dataset afterward (fixing it after combining would silently collapse every file's timestamp to the first file's date).
 
 ```yaml
 # Opt-in - all three keys default to the prior behavior when omitted
@@ -539,21 +539,21 @@ cd scripts
 # 1. Once, interactively: create the empty store for the full time range
 python init_healpix_store.py -c ../config/gsmap_config.yaml \
     --start-year 2010 --end-year 2024 -z 9 \
-    -o /path/to/output/GsMAPv8_1H_zoom9_20100101_20241231.zarr
+    -o /path/to/output/GSMaPv8_1H_zoom9_20100101_20241231.zarr
 
 # 2. Submit the array (one task per year, throttled to 5 concurrent)
-sbatch --export=STORE=/path/to/output/GsMAPv8_1H_zoom9_20100101_20241231.zarr \
+sbatch --export=STORE=/path/to/output/GSMaPv8_1H_zoom9_20100101_20241231.zarr \
     submit_gsmap_array.sh
 
 # 3. After all tasks finish, check completeness and consolidate metadata
-python check_healpix_store.py /path/to/output/GsMAPv8_1H_zoom9_20100101_20241231.zarr \
+python check_healpix_store.py /path/to/output/GSMaPv8_1H_zoom9_20100101_20241231.zarr \
     --start-year 2010 --end-year 2024
-python -c "import zarr; zarr.consolidate_metadata('/path/to/output/GsMAPv8_1H_zoom9_20100101_20241231.zarr')"
+python -c "import zarr; zarr.consolidate_metadata('/path/to/output/GSMaPv8_1H_zoom9_20100101_20241231.zarr')"
 ```
 
-### Performance: GsMAP 2010-2024 (validated on NERSC Perlmutter)
+### Performance: GSMaP 2010-2024 (validated on NERSC Perlmutter)
 
-15 years of hourly GsMAP data (131,496 files, zoom 9, 2 variables) processed as 15 array tasks, 5 concurrent, 1 exclusive node (128 cores) each:
+15 years of hourly GSMaP data (131,496 files, zoom 9, 2 variables) processed as 15 array tasks, 5 concurrent, 1 exclusive node (128 cores) each:
 
 | Metric | Value |
 |---|---|
@@ -586,7 +586,7 @@ healpix-remapping/
 │   ├── scream_ne120_3H_config.yaml    # SCREAM ne120 standard configuration
 │   ├── era5_2d_config.yaml            # ERA5 2D surface variables configuration
 │   ├── era5_3d_config.yaml            # ERA5 3D pressure level configuration
-│   └── gsmap_config.yaml              # GsMAP configuration (non-standard time handling example)
+│   └── gsmap_config.yaml              # GSMaP configuration (non-standard time handling example)
 │
 ├── scripts/                            # Execution scripts
 │   ├── launch_imerg_processing.py     # IMERG launcher
@@ -594,7 +594,7 @@ healpix-remapping/
 │   ├── launch_scream_processing.py    # SCREAM launcher
 │   ├── launch_era5_2d_processing.py   # ERA5 2D surface launcher
 │   ├── launch_era5_3d_processing.py   # ERA5 3D pressure level launcher
-│   ├── launch_gsmap_processing.py     # GsMAP launcher (supports --region-store)
+│   ├── launch_gsmap_processing.py     # GSMaP launcher (supports --region-store)
 │   ├── merge_era5_zarr.py             # Merge ERA5 2D and 3D outputs
 │   ├── init_healpix_store.py          # Create empty multi-year store for parallel region writes
 │   ├── submit_gsmap_array.sh          # SLURM array template (one task per year)

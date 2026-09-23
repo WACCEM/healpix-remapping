@@ -11,7 +11,7 @@
 #SBATCH --output=logs/gsmap_%A_%a.out
 #SBATCH --error=logs/gsmap_%A_%a.err
 
-# SLURM job array script for GsMAP -> HEALPix processing: one array task per
+# SLURM job array script for GSMaP -> HEALPix processing: one array task per
 # year, all writing in parallel into ONE pre-existing Zarr store (via
 # --region-store), instead of each task writing (and later merging) its own
 # separate store.

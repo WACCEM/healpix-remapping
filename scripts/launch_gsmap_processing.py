@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Flexible launcher script for GsMAP to HEALPix processing
+Flexible launcher script for GSMaP to HEALPix processing
 
-This script processes GsMAP data files with flexible file pattern matching.
+This script processes GSMaP data files with flexible file pattern matching.
 It reads configuration from a YAML config file (default: gsmap_config.yaml).
 
 Usage: 
@@ -41,7 +41,7 @@ def load_config(config_path):
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
-        description='Process GsMAP data to HEALPix format',
+        description='Process GSMaP data to HEALPix format',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -113,7 +113,7 @@ def main():
     zoom = args.zoom or config['default_zoom']
     time_average = args.time_average or config.get('time_average')
     overwrite = args.overwrite
-    output_basename = config.get('output_basename', 'GsMAP')
+    output_basename = config.get('output_basename', 'GSMaP')
 
     # Determine time suffix for filename
     # Priority: 1) time_average (if specified), 2) original_time_suffix from config, 3) default to '30MIN'
@@ -124,7 +124,7 @@ def main():
         # Use the original data time resolution from config
         time_suffix = config['original_time_suffix'].upper()
     else:
-        # Default to 1H (GsMAP hourly)
+        # Default to 1H (GSMaP hourly)
         time_suffix = '1H'
     
     # Create output filename
@@ -143,7 +143,7 @@ def main():
         output_file = region_store  # used for logging only in this mode
 
     print(f"\n{'='*70}")
-    print(f"Processing GsMAP data")
+    print(f"Processing GSMaP data")
     print(f"{'='*70}")
     print(f"Date range:")
     print(f"  Start: {start_date.strftime('%Y-%m-%d %H:%M:%S')}")
