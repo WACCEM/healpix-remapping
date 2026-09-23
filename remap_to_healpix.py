@@ -328,7 +328,7 @@ def process_to_healpix_zarr(start_date, end_date, zoom, output_zarr,
     remap_variables = config.get('remap_variables', None)
     input_files = config.get('input_files', None)  # Pre-searched files (ERA5)
     combine_vars = config.get('combine_vars', False)  # Merge multi-variable files
-    fix_time_units = config.get('fix_time_units', False)  # Repair non-CF-compliant time units (e.g. GsMAP)
+    fix_time_units = config.get('fix_time_units', False)  # Repair non-CF-compliant time units (e.g. GSMaP)
     rename_variables = config.get('rename_variables', None)  # Applied when fix_time_units=True
     use_cftime = config.get('use_cftime', True)
 

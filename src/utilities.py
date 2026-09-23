@@ -352,7 +352,7 @@ def fix_nonstandard_time(ds, time_dim='time', rename_variables=None, use_cftime=
     coordinate, then decodes the dataset with xr.decode_cf().
 
     Intended for use as the `preprocess=` argument of xr.open_mfdataset()
-    when opened with decode_times=False, since some datasets (e.g. GsMAP)
+    when opened with decode_times=False, since some datasets (e.g. GSMaP)
     store the reference date only in the per-file `units` attribute -
     repairing it after concatenation would lose all but the first file's
     reference date.
@@ -897,7 +897,7 @@ def read_concat_files(files, time_chunk_size=48, spatial_dims={'lat': -1, 'lon':
         If True, open files with decode_times=False and repair non-CF-compliant
         time units per file (via fix_nonstandard_time()) before decoding.
         Use this for datasets whose time `units` attribute is non-standard,
-        e.g. GsMAP's "1hour since 2020-01-02 08:00:0.0" with a per-file
+        e.g. GSMaP's "1hour since 2020-01-02 08:00:0.0" with a per-file
         reference date. Default: False (unchanged, existing behavior).
     rename_variables : dict, optional
         Mapping of {existing_name: new_name} applied while fixing time units
@@ -1018,7 +1018,7 @@ def read_concat_files(files, time_chunk_size=48, spatial_dims={'lat': -1, 'lon':
     logger.info("Opening multi-file dataset...")
 
     # Build time-decoding kwargs. By default, let xarray decode CF time
-    # units directly. If fix_time_units=True (e.g. GsMAP's non-standard
+    # units directly. If fix_time_units=True (e.g. GSMaP's non-standard
     # "1hour since ..." units with a per-file reference date), open with
     # decode_times=False and repair + decode each file individually via
     # `preprocess`, since the repair must happen before files are combined.
